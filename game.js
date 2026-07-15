@@ -17,8 +17,13 @@
   const keys = new Set();
   const clouds = [];
   const obstacles = [];
+  const bullets = [];
   const particles = [];
   const streaks = [];
+
+  const BULLET_SPEED = 720;
+  const BULLET_COOLDOWN = 0.16;
+  const BULLET_SCORE = 100;
 
   let state = "menu";
   let score = 0;
@@ -29,6 +34,8 @@
   let lastTime = 0;
   let screenShake = 0;
   let pointerActive = false;
+  let rightMouseDown = false;
+  let fireCooldown = 0;
 
   const player = {
     x: 180,
@@ -91,7 +98,10 @@
     elapsed = 0;
     spawnTimer = 0.8;
     screenShake = 0;
+    fireCooldown = 0;
+    rightMouseDown = false;
     obstacles.length = 0;
+    bullets.length = 0;
     particles.length = 0;
     player.x = 180;
     player.y = HEIGHT / 2;
@@ -101,6 +111,20 @@
     player.tilt = 0;
     updateHealth();
     updateHud();
+  }
+
+  function fireBullet() {
+    if (state !== "playing" || fireCooldown > 0) return;
+
+    bullets.push({
+      x: player.x + 42,
+      y: player.y,
+      width: 16,
+      height: 5,
+      speed: BULLET_SPEED,
+    });
+    fireCooldown = BULLET_COOLDOWN;
+    burst(player.x + 46, player.y, "#ffe08a", 4);
   }
 
   function startGame() {
@@ -209,6 +233,8 @@
     score += dt * 18 * worldSpeed;
     distance += dt * 0.09 * worldSpeed;
     screenShake = Math.max(0, screenShake - dt * 22);
+    fireCooldown = Math.max(0, fireCooldown - dt);
+    if (rightMouseDown) fireBullet();
     movePlayer(dt);
 
     for (const cloud of clouds) {
@@ -231,6 +257,27 @@
     if (spawnTimer <= 0) {
       createObstacle();
       spawnTimer = Math.max(0.48, random(0.85, 1.45) - elapsed * 0.006);
+    }
+
+    for (let i = bullets.length - 1; i >= 0; i -= 1) {
+      const bullet = bullets[i];
+      bullet.x += bullet.speed * dt;
+
+      let impact = false;
+      for (let j = obstacles.length - 1; j >= 0; j -= 1) {
+        const obstacle = obstacles[j];
+        if (obstacle.hit) continue;
+        if (!boxesOverlap(bullet, obstacle, 2)) continue;
+
+        obstacle.hit = true;
+        score += BULLET_SCORE;
+        burst(obstacle.x, obstacle.y, obstacle.type === "balloon" ? "#ffb44a" : "#f1655f", 20);
+        obstacles.splice(j, 1);
+        impact = true;
+        break;
+      }
+
+      if (impact || bullet.x > WIDTH + 40) bullets.splice(i, 1);
     }
 
     for (let i = obstacles.length - 1; i >= 0; i -= 1) {
@@ -404,6 +451,30 @@
     }
   }
 
+  function drawBullets() {
+    for (const bullet of bullets) {
+      const glow = ctx.createLinearGradient(
+        bullet.x - bullet.width / 2,
+        bullet.y,
+        bullet.x + bullet.width / 2,
+        bullet.y
+      );
+      glow.addColorStop(0, "rgba(255, 228, 120, 0)");
+      glow.addColorStop(0.35, "#ffe27a");
+      glow.addColorStop(1, "#fff8d8");
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.roundRect(
+        bullet.x - bullet.width / 2,
+        bullet.y - bullet.height / 2,
+        bullet.width,
+        bullet.height,
+        3
+      );
+      ctx.fill();
+    }
+  }
+
   function draw(time) {
     ctx.save();
     if (screenShake > 0) ctx.translate(random(-screenShake, screenShake), random(-screenShake, screenShake));
@@ -416,6 +487,8 @@
         drawBalloon(obstacle);
       }
     }
+
+    drawBullets();
 
     if (state !== "gameover" || health > 0) {
       const blink = player.invulnerable > 0 && Math.floor(player.invulnerable * 12) % 2 === 0;
@@ -468,10 +541,23 @@
   window.addEventListener("keyup", (event) => keys.delete(event.code));
   window.addEventListener("blur", () => {
     keys.clear();
+    rightMouseDown = false;
     if (state === "playing") togglePause();
   });
 
+  canvas.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+  });
+
   canvas.addEventListener("pointerdown", (event) => {
+    if (event.button === 2) {
+      rightMouseDown = true;
+      fireBullet();
+      return;
+    }
+
+    if (event.button !== 0) return;
+
     pointerActive = true;
     canvas.setPointerCapture(event.pointerId);
     moveToPointer(event);
@@ -480,11 +566,24 @@
     if (pointerActive) moveToPointer(event);
   });
   canvas.addEventListener("pointerup", (event) => {
+    if (event.button === 2) {
+      rightMouseDown = false;
+      return;
+    }
+
+    if (event.button !== 0) return;
+
     pointerActive = false;
-    canvas.releasePointerCapture(event.pointerId);
+    if (canvas.hasPointerCapture(event.pointerId)) {
+      canvas.releasePointerCapture(event.pointerId);
+    }
   });
   canvas.addEventListener("pointercancel", () => {
     pointerActive = false;
+    rightMouseDown = false;
+  });
+  window.addEventListener("mouseup", (event) => {
+    if (event.button === 2) rightMouseDown = false;
   });
 
   startButton.addEventListener("click", () => {
