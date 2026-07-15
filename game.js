@@ -129,10 +129,27 @@
       cloudDim: 0,
       difficulty: 2.05,
     },
+    {
+      name: "Manhattan Run",
+      at: 11.5,
+      top: [6, 10, 28],
+      mid: [22, 26, 56],
+      bottom: [46, 42, 74],
+      horizon: [10, 12, 30],
+      celestial: "moon",
+      stars: true,
+      city: true,
+      cloudDim: 0.18,
+      difficulty: 2.4,
+    },
   ];
 
   const stars = [];
   const powerups = [];
+  const skylineFar = [];
+  const skylineNear = [];
+  const SKYLINE_TILE = 2200;
+  let cityScroll = 0;
   let stageIndex = 0;
   let stageBanner = { text: "", sub: "", life: 0, maxLife: 2.4 };
   let lightningTimer = 4;
@@ -186,6 +203,7 @@
         starsAlpha: 0,
         rainAlpha: 0,
         spaceAlpha: 0,
+        cityAlpha: 0,
         lightning: false,
       };
     }
@@ -202,6 +220,7 @@
       starsAlpha: (previous.stars ? 1 - t : 0) + (stage.stars ? t : 0),
       rainAlpha: (previous.rain ? 1 - t : 0) + (stage.rain ? t : 0),
       spaceAlpha: (previous.space ? 1 - t : 0) + (stage.space ? t : 0),
+      cityAlpha: (previous.city ? 1 - t : 0) + (stage.city ? t : 0),
       lightning: stage.lightning && t > 0.4,
     };
   }
@@ -367,6 +386,27 @@
         size: random(0.6, 2.2),
         twinkle: random(0, Math.PI * 2),
       });
+    }
+
+    skylineFar.length = 0;
+    skylineNear.length = 0;
+    let cursor = 0;
+    while (cursor < SKYLINE_TILE) {
+      const width = random(46, 92);
+      skylineFar.push({ x: cursor, width, height: random(70, 190), seed: Math.random() });
+      cursor += width + random(4, 20);
+    }
+    cursor = 0;
+    while (cursor < SKYLINE_TILE) {
+      const width = random(60, 120);
+      skylineNear.push({
+        x: cursor,
+        width,
+        height: random(90, 240),
+        seed: Math.random(),
+        spire: Math.random() < 0.22,
+      });
+      cursor += width + random(10, 34);
     }
   }
 
@@ -559,6 +599,30 @@
 
   function createObstacle() {
     const difficulty = stageDifficulty();
+    const cityStage = gameMode === "single" && STAGES[stageIndexForDistance(distance)].city;
+
+    if (cityStage && Math.random() < 0.42) {
+      const towerHeight = random(190, 420);
+      obstacles.push({
+        type: "tower",
+        x: WIDTH + 90,
+        y: HEIGHT - towerHeight / 2,
+        baseY: HEIGHT - towerHeight / 2,
+        width: random(62, 96),
+        height: towerHeight,
+        speed: 250 * (1 + (difficulty - 1) * 0.3),
+        phase: random(0, Math.PI * 2),
+        amplitude: 0,
+        fireTimer: Infinity,
+        isAce: false,
+        tilt: 0,
+        hit: false,
+        nearMiss: false,
+        seed: Math.random(),
+      });
+      return;
+    }
+
     const type = Math.random() < 0.68 ? "plane" : "balloon";
     const speed = (225 + Math.min(elapsed, 90) * 2.2 + random(0, 60)) * (1 + (difficulty - 1) * 0.45);
     const y = random(100, HEIGHT - 85);
@@ -1058,6 +1122,7 @@
 
     shieldTime = Math.max(0, shieldTime - dt);
     tripleTime = Math.max(0, tripleTime - dt);
+    cityScroll += dt * 60;
 
     if (bossDelay > 0) {
       bossDelay -= dt;
@@ -1136,6 +1201,12 @@
         if (obstacle.hit) continue;
         if (!sweptBulletHits(bullet, obstacle)) continue;
 
+        if (obstacle.type === "tower") {
+          burst(bullet.x, bullet.y, "#c9d6e4", 6, 0.32);
+          impact = true;
+          break;
+        }
+
         obstacle.hit = true;
         combo += 1;
         comboTimer = 2.2;
@@ -1204,6 +1275,11 @@
       }
 
       if (!obstacle.hit && player.invulnerable <= 0 && boxesOverlap(player, obstacle, 7)) {
+        if (obstacle.type === "tower") {
+          damagePlayer(player.x + 20, player.y);
+          if (health <= 0) return;
+          continue;
+        }
         obstacle.hit = true;
         damagePlayer(player.x + 20, player.y);
         obstacles.splice(i, 1);
@@ -1411,7 +1487,7 @@
       for (const cloud of clouds) drawCloud(cloud, palette.cloudDim);
     }
 
-    if (palette.spaceAlpha < 0.6) {
+    if (palette.spaceAlpha < 0.6 && palette.cityAlpha < 0.6) {
       ctx.fillStyle = css(palette.horizon, 0.24 * (1 - palette.spaceAlpha));
       ctx.beginPath();
       ctx.moveTo(0, HEIGHT);
@@ -1423,6 +1499,8 @@
       ctx.closePath();
       ctx.fill();
     }
+
+    if (palette.cityAlpha > 0.02) drawSkyline(time, palette.cityAlpha);
 
     ctx.strokeStyle = "rgba(222, 250, 255, .18)";
     ctx.lineWidth = 1;
@@ -1450,6 +1528,119 @@
       ctx.fillStyle = `rgba(235, 244, 255, ${lightningFlash * 0.42})`;
       ctx.fillRect(0, 0, WIDTH, HEIGHT);
     }
+  }
+
+  function drawSkylineLayer(buildings, offset, alpha, bodyColor, windowColor, windowChance) {
+    for (let tile = -1; tile <= 1; tile += 1) {
+      for (const building of buildings) {
+        const x = building.x - offset + tile * SKYLINE_TILE;
+        if (x + building.width < -20 || x > WIDTH + 20) continue;
+        const top = HEIGHT - building.height;
+
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = bodyColor;
+        ctx.fillRect(x, top, building.width, building.height);
+
+        if (building.spire) {
+          ctx.fillRect(x + building.width / 2 - 2, top - 26, 4, 26);
+          ctx.fillStyle = "#ff5a5a";
+          ctx.globalAlpha = alpha * (0.4 + 0.6 * Math.abs(Math.sin(building.seed * 20 + cityScroll * 0.05)));
+          ctx.fillRect(x + building.width / 2 - 2.5, top - 30, 5, 5);
+          ctx.fillStyle = bodyColor;
+          ctx.globalAlpha = alpha;
+        }
+
+        ctx.fillStyle = windowColor;
+        const columns = Math.floor(building.width / 14);
+        const rows = Math.floor(building.height / 20);
+        for (let c = 0; c < columns; c += 1) {
+          for (let r = 0; r < rows; r += 1) {
+            // Deterministic per-window "is it lit" hash so windows don't flicker
+            const lit = Math.sin(building.seed * 1000 + c * 13.7 + r * 7.3) > 1 - windowChance * 2;
+            if (!lit) continue;
+            ctx.globalAlpha = alpha * 0.8;
+            ctx.fillRect(x + 5 + c * 14, top + 8 + r * 20, 6, 9);
+          }
+        }
+      }
+    }
+  }
+
+  function drawSkyline(time, alpha) {
+    ctx.save();
+
+    drawSkylineLayer(skylineFar, (cityScroll * 0.45) % SKYLINE_TILE, alpha * 0.85, "#101530", "rgba(255, 214, 140, .35)", 0.16);
+    drawSkylineLayer(skylineNear, (cityScroll * 1.1) % SKYLINE_TILE, alpha, "#080c20", "rgba(255, 224, 150, .8)", 0.24);
+
+    // Sweeping searchlights rising from the streets
+    for (const beam of [
+      { x: 190, speed: 0.00021, phase: 0 },
+      { x: 660, speed: 0.00017, phase: 2.1 },
+    ]) {
+      const angle = -Math.PI / 2 + Math.sin(time * beam.speed + beam.phase) * 0.5;
+      const beamGradient = ctx.createLinearGradient(beam.x, HEIGHT, beam.x + Math.cos(angle) * 620, HEIGHT + Math.sin(angle) * 620);
+      beamGradient.addColorStop(0, `rgba(210, 226, 255, ${0.16 * alpha})`);
+      beamGradient.addColorStop(1, "rgba(210, 226, 255, 0)");
+      ctx.fillStyle = beamGradient;
+      ctx.beginPath();
+      ctx.moveTo(beam.x - 14, HEIGHT);
+      ctx.lineTo(beam.x + Math.cos(angle) * 640 - 52, HEIGHT + Math.sin(angle) * 640);
+      ctx.lineTo(beam.x + Math.cos(angle) * 640 + 52, HEIGHT + Math.sin(angle) * 640);
+      ctx.lineTo(beam.x + 14, HEIGHT);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Street glow along the bottom edge
+    const glow = ctx.createLinearGradient(0, HEIGHT - 46, 0, HEIGHT);
+    glow.addColorStop(0, "rgba(255, 170, 90, 0)");
+    glow.addColorStop(1, `rgba(255, 170, 90, ${0.28 * alpha})`);
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, HEIGHT - 46, WIDTH, 46);
+
+    ctx.restore();
+  }
+
+  function drawTower(obstacle) {
+    const left = obstacle.x - obstacle.width / 2;
+    const top = obstacle.y - obstacle.height / 2;
+    ctx.save();
+
+    const body = ctx.createLinearGradient(left, top, left + obstacle.width, top);
+    body.addColorStop(0, "#232a4d");
+    body.addColorStop(0.5, "#2f3763");
+    body.addColorStop(1, "#1a2040");
+    ctx.fillStyle = body;
+    ctx.fillRect(left, top, obstacle.width, obstacle.height);
+
+    ctx.fillStyle = "#12172f";
+    ctx.fillRect(left - 4, top, obstacle.width + 8, 10);
+
+    // Antenna with blinking aircraft-warning light
+    ctx.strokeStyle = "#3c456f";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(obstacle.x, top);
+    ctx.lineTo(obstacle.x, top - 30);
+    ctx.stroke();
+    ctx.fillStyle = "#ff4d4d";
+    ctx.globalAlpha = 0.35 + 0.65 * Math.abs(Math.sin(obstacle.phase * 1.6));
+    ctx.beginPath();
+    ctx.arc(obstacle.x, top - 33, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = "rgba(255, 224, 150, .75)";
+    const columns = Math.floor(obstacle.width / 15);
+    const rows = Math.floor(obstacle.height / 24);
+    for (let c = 0; c < columns; c += 1) {
+      for (let r = 0; r < rows; r += 1) {
+        const lit = Math.sin(obstacle.seed * 1000 + c * 11.9 + r * 5.7) > 0.35;
+        if (!lit) continue;
+        ctx.fillRect(left + 6 + c * 15, top + 16 + r * 24, 7, 11);
+      }
+    }
+    ctx.restore();
   }
 
   function drawCloud(cloud, dim = 1) {
@@ -1764,6 +1955,8 @@
           -1,
           obstacle.tilt
         );
+      } else if (obstacle.type === "tower") {
+        drawTower(obstacle);
       } else {
         drawBalloon(obstacle);
       }
