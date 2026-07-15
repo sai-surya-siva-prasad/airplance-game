@@ -319,7 +319,7 @@
     muzzleFlash = Math.max(0, muzzleFlash - dt);
     comboTimer = Math.max(0, comboTimer - dt);
     if (comboTimer === 0) combo = 0;
-    if (rightMouseDown) fireBullet();
+    if (rightMouseDown || pointerActive || keys.has("Space")) fireBullet();
     movePlayer(dt);
 
     for (const cloud of clouds) {
@@ -767,9 +767,8 @@
       return;
     }
 
-    if (event.code === "Space" && state === "playing") {
+    if (event.code === "Space" && state === "playing" && !event.repeat) {
       fireBullet();
-      return;
     }
 
     keys.add(event.code);

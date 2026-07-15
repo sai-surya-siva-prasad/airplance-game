@@ -9,7 +9,7 @@ Open `index.html` in a modern browser. No build step or local server is required
 ## Controls
 
 - **Arrow keys** or **WASD** — steer
-- **Right click / hold** or **Space** — fire the cannon
+- **Click / hold** (any mouse button), **touch**, or **Space** — fire the cannon; dragging steers and fires at once
 - **Drag / touch** — steer toward your pointer
 - **P** — pause or resume
 - **Enter / Space** — start or restart from a menu
