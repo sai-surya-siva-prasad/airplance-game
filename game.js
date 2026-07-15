@@ -18,12 +18,16 @@
   const clouds = [];
   const obstacles = [];
   const bullets = [];
+  const enemyBullets = [];
   const particles = [];
+  const shockwaves = [];
+  const scorePopups = [];
   const streaks = [];
 
-  const BULLET_SPEED = 720;
-  const BULLET_COOLDOWN = 0.16;
+  const BULLET_SPEED = 900;
+  const BULLET_COOLDOWN = 0.12;
   const BULLET_SCORE = 100;
+  const ENEMY_BULLET_SPEED = 330;
 
   let state = "menu";
   let score = 0;
@@ -36,6 +40,9 @@
   let pointerActive = false;
   let rightMouseDown = false;
   let fireCooldown = 0;
+  let muzzleFlash = 0;
+  let combo = 0;
+  let comboTimer = 0;
 
   const player = {
     x: 180,
@@ -99,10 +106,16 @@
     spawnTimer = 0.8;
     screenShake = 0;
     fireCooldown = 0;
+    muzzleFlash = 0;
+    combo = 0;
+    comboTimer = 0;
     rightMouseDown = false;
     obstacles.length = 0;
     bullets.length = 0;
+    enemyBullets.length = 0;
     particles.length = 0;
+    shockwaves.length = 0;
+    scorePopups.length = 0;
     player.x = 180;
     player.y = HEIGHT / 2;
     player.vx = 0;
@@ -118,13 +131,15 @@
 
     bullets.push({
       x: player.x + 42,
+      previousX: player.x + 42,
       y: player.y,
-      width: 16,
-      height: 5,
+      width: 24,
+      height: 7,
       speed: BULLET_SPEED,
     });
     fireCooldown = BULLET_COOLDOWN;
-    burst(player.x + 46, player.y, "#ffe08a", 4);
+    muzzleFlash = 0.08;
+    burst(player.x + 47, player.y, "#ffe08a", 7, 0.24);
   }
 
   function startGame() {
@@ -160,23 +175,31 @@
 
   function createObstacle() {
     const type = Math.random() < 0.68 ? "plane" : "balloon";
-    const speed = 225 + elapsed * 3.2 + random(0, 60);
+    const speed = 225 + Math.min(elapsed, 90) * 2.2 + random(0, 60);
     const y = random(100, HEIGHT - 85);
+    const isAce = type === "plane" && elapsed > 18 && Math.random() < Math.min(0.45, elapsed / 130);
+    const phase = random(0, Math.PI * 2);
+    const amplitude = type === "plane" ? random(12, isAce ? 64 : 30) : random(16, 28);
 
     obstacles.push({
       type,
       x: WIDTH + 80,
       y,
+      baseY: y - Math.sin(phase) * amplitude,
       width: type === "plane" ? 67 : 39,
       height: type === "plane" ? 31 : 58,
       speed,
-      phase: random(0, Math.PI * 2),
+      phase,
+      amplitude,
+      fireTimer: type === "plane" ? random(1.15, 2.35) : Infinity,
+      isAce,
+      tilt: 0,
       hit: false,
       nearMiss: false,
     });
   }
 
-  function burst(x, y, color, count = 18) {
+  function burst(x, y, color, count = 18, maxLife = 0.85) {
     for (let i = 0; i < count; i += 1) {
       const angle = random(0, Math.PI * 2);
       const speed = random(45, 230);
@@ -185,12 +208,59 @@
         y,
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        life: random(0.35, 0.85),
-        maxLife: 0.85,
+        life: random(maxLife * 0.45, maxLife),
+        maxLife,
         size: random(2, 6),
         color,
       });
     }
+  }
+
+  function addImpact(x, y, color, points) {
+    burst(x, y, color, 26, 0.9);
+    shockwaves.push({ x, y, radius: 5, life: 0.45, maxLife: 0.45, color });
+    scorePopups.push({ x, y: y - 18, text: `+${points}`, life: 0.8, maxLife: 0.8 });
+  }
+
+  function damagePlayer(x, y) {
+    if (player.invulnerable > 0) return false;
+
+    health -= 1;
+    player.invulnerable = 1.25;
+    screenShake = 10;
+    combo = 0;
+    comboTimer = 0;
+    burst(x, y, "#ffb44a", 28, 0.95);
+    shockwaves.push({ x, y, radius: 8, life: 0.5, maxLife: 0.5, color: "#ff704d" });
+    updateHealth();
+    if (health <= 0) showGameOver();
+    return true;
+  }
+
+  function fireEnemyBullet(obstacle) {
+    const dx = player.x - obstacle.x;
+    const dy = player.y - obstacle.y;
+    const distance = Math.hypot(dx, dy) || 1;
+    const lead = Math.min(0.45, distance / ENEMY_BULLET_SPEED);
+    const targetX = player.x + player.vx * lead;
+    const targetY = player.y + player.vy * lead;
+    const aimX = targetX - obstacle.x;
+    const aimY = targetY - obstacle.y;
+    const aimDistance = Math.hypot(aimX, aimY) || 1;
+    const speed = ENEMY_BULLET_SPEED + Math.min(120, elapsed * 1.5);
+
+    enemyBullets.push({
+      x: obstacle.x - 35,
+      y: obstacle.y,
+      previousX: obstacle.x - 35,
+      previousY: obstacle.y,
+      vx: (aimX / aimDistance) * speed,
+      vy: (aimY / aimDistance) * speed,
+      width: 12,
+      height: 8,
+      life: 4,
+    });
+    burst(obstacle.x - 37, obstacle.y, "#ff6f5d", 5, 0.25);
   }
 
   function boxesOverlap(a, b, padding = 0) {
@@ -200,6 +270,18 @@
       a.y - a.height / 2 + padding < b.y + b.height / 2 - padding &&
       a.y + a.height / 2 - padding > b.y - b.height / 2 + padding
     );
+  }
+
+  function sweptBulletHits(bullet, target) {
+    const left = target.x - target.width / 2;
+    const right = target.x + target.width / 2;
+    const top = target.y - target.height / 2;
+    const bottom = target.y + target.height / 2;
+    const bulletTop = bullet.y - bullet.height / 2;
+    const bulletBottom = bullet.y + bullet.height / 2;
+    const travelLeft = Math.min(bullet.previousX, bullet.x) - bullet.width / 2;
+    const travelRight = Math.max(bullet.previousX, bullet.x) + bullet.width / 2;
+    return bulletBottom >= top && bulletTop <= bottom && travelRight >= left && travelLeft <= right;
   }
 
   function movePlayer(dt) {
@@ -234,6 +316,9 @@
     distance += dt * 0.09 * worldSpeed;
     screenShake = Math.max(0, screenShake - dt * 22);
     fireCooldown = Math.max(0, fireCooldown - dt);
+    muzzleFlash = Math.max(0, muzzleFlash - dt);
+    comboTimer = Math.max(0, comboTimer - dt);
+    if (comboTimer === 0) combo = 0;
     if (rightMouseDown) fireBullet();
     movePlayer(dt);
 
@@ -256,22 +341,32 @@
     spawnTimer -= dt;
     if (spawnTimer <= 0) {
       createObstacle();
-      spawnTimer = Math.max(0.48, random(0.85, 1.45) - elapsed * 0.006);
+      spawnTimer = Math.max(0.36, random(0.78, 1.35) - elapsed * 0.006);
     }
 
     for (let i = bullets.length - 1; i >= 0; i -= 1) {
       const bullet = bullets[i];
+      bullet.previousX = bullet.x;
       bullet.x += bullet.speed * dt;
 
       let impact = false;
       for (let j = obstacles.length - 1; j >= 0; j -= 1) {
         const obstacle = obstacles[j];
         if (obstacle.hit) continue;
-        if (!boxesOverlap(bullet, obstacle, 2)) continue;
+        if (!sweptBulletHits(bullet, obstacle)) continue;
 
         obstacle.hit = true;
-        score += BULLET_SCORE;
-        burst(obstacle.x, obstacle.y, obstacle.type === "balloon" ? "#ffb44a" : "#f1655f", 20);
+        combo += 1;
+        comboTimer = 2.2;
+        const points = BULLET_SCORE * Math.min(combo, 5);
+        score += points;
+        screenShake = Math.max(screenShake, 3);
+        addImpact(
+          obstacle.x,
+          obstacle.y,
+          obstacle.type === "balloon" ? "#ffb44a" : "#f1655f",
+          points
+        );
         obstacles.splice(j, 1);
         impact = true;
         break;
@@ -280,23 +375,58 @@
       if (impact || bullet.x > WIDTH + 40) bullets.splice(i, 1);
     }
 
+    for (let i = enemyBullets.length - 1; i >= 0; i -= 1) {
+      const bullet = enemyBullets[i];
+      bullet.previousX = bullet.x;
+      bullet.previousY = bullet.y;
+      bullet.x += bullet.vx * dt;
+      bullet.y += bullet.vy * dt;
+      bullet.life -= dt;
+
+      if (boxesOverlap(bullet, player, 5)) {
+        damagePlayer(bullet.x, bullet.y);
+        enemyBullets.splice(i, 1);
+        if (health <= 0) return;
+        continue;
+      }
+
+      if (
+        bullet.life <= 0 ||
+        bullet.x < -40 ||
+        bullet.x > WIDTH + 40 ||
+        bullet.y < -40 ||
+        bullet.y > HEIGHT + 40
+      ) {
+        enemyBullets.splice(i, 1);
+      }
+    }
+
     for (let i = obstacles.length - 1; i >= 0; i -= 1) {
       const obstacle = obstacles[i];
       obstacle.x -= obstacle.speed * dt;
       obstacle.phase += dt * 2.5;
-      if (obstacle.type === "balloon") obstacle.y += Math.sin(obstacle.phase) * 18 * dt;
+      const previousY = obstacle.y;
+      obstacle.y = obstacle.baseY + Math.sin(obstacle.phase) * obstacle.amplitude;
+      obstacle.tilt += (Math.max(-0.35, Math.min(0.35, (obstacle.y - previousY) * 0.18)) - obstacle.tilt) * 0.18;
+      obstacle.fireTimer -= dt;
+
+      if (
+        obstacle.type === "plane" &&
+        elapsed > 6 &&
+        obstacle.x < WIDTH - 60 &&
+        obstacle.x > player.x + 230 &&
+        obstacle.fireTimer <= 0
+      ) {
+        fireEnemyBullet(obstacle);
+        obstacle.fireTimer = Math.max(0.75, random(1.25, 2.4) - elapsed * 0.006);
+      }
 
       if (!obstacle.hit && player.invulnerable <= 0 && boxesOverlap(player, obstacle, 7)) {
         obstacle.hit = true;
-        health -= 1;
-        player.invulnerable = 1.25;
-        screenShake = 8;
-        burst(player.x + 20, player.y, "#ffb44a", 24);
-        updateHealth();
-        if (health <= 0) {
-          showGameOver();
-          return;
-        }
+        damagePlayer(player.x + 20, player.y);
+        obstacles.splice(i, 1);
+        if (health <= 0) return;
+        continue;
       }
 
       const nearDistance = Math.hypot(player.x - obstacle.x, player.y - obstacle.y);
@@ -317,6 +447,20 @@
       particle.vy += 50 * dt;
       particle.life -= dt;
       if (particle.life <= 0) particles.splice(i, 1);
+    }
+
+    for (let i = shockwaves.length - 1; i >= 0; i -= 1) {
+      const shockwave = shockwaves[i];
+      shockwave.radius += 150 * dt;
+      shockwave.life -= dt;
+      if (shockwave.life <= 0) shockwaves.splice(i, 1);
+    }
+
+    for (let i = scorePopups.length - 1; i >= 0; i -= 1) {
+      const popup = scorePopups[i];
+      popup.y -= 35 * dt;
+      popup.life -= dt;
+      if (popup.life <= 0) scorePopups.splice(i, 1);
     }
 
     updateHud();
@@ -454,25 +598,93 @@
   function drawBullets() {
     for (const bullet of bullets) {
       const glow = ctx.createLinearGradient(
-        bullet.x - bullet.width / 2,
+        bullet.x - 52,
         bullet.y,
         bullet.x + bullet.width / 2,
         bullet.y
       );
       glow.addColorStop(0, "rgba(255, 228, 120, 0)");
-      glow.addColorStop(0.35, "#ffe27a");
+      glow.addColorStop(0.72, "rgba(255, 210, 80, .45)");
       glow.addColorStop(1, "#fff8d8");
       ctx.fillStyle = glow;
       ctx.beginPath();
       ctx.roundRect(
-        bullet.x - bullet.width / 2,
+        bullet.x - 52,
         bullet.y - bullet.height / 2,
-        bullet.width,
+        64,
         bullet.height,
         3
       );
       ctx.fill();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.ellipse(bullet.x + 7, bullet.y, 7, 3, 0, 0, Math.PI * 2);
+      ctx.fill();
     }
+  }
+
+  function drawEnemyBullets(time) {
+    for (const bullet of enemyBullets) {
+      const pulse = 1 + Math.sin(time * 0.02 + bullet.x * 0.04) * 0.22;
+      const gradient = ctx.createLinearGradient(bullet.x + 28, bullet.y, bullet.x - 8, bullet.y);
+      gradient.addColorStop(0, "rgba(255, 75, 60, 0)");
+      gradient.addColorStop(0.7, "rgba(255, 100, 70, .6)");
+      gradient.addColorStop(1, "#fff1d0");
+      ctx.strokeStyle = gradient;
+      ctx.lineWidth = 5 * pulse;
+      ctx.beginPath();
+      ctx.moveTo(bullet.x + 28, bullet.y - bullet.vy * 0.03);
+      ctx.lineTo(bullet.x - 7, bullet.y);
+      ctx.stroke();
+      ctx.fillStyle = "#fff5d6";
+      ctx.beginPath();
+      ctx.arc(bullet.x - 5, bullet.y, 4 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawCombatEffects() {
+    for (const shockwave of shockwaves) {
+      ctx.save();
+      ctx.globalAlpha = shockwave.life / shockwave.maxLife;
+      ctx.strokeStyle = shockwave.color;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(shockwave.x, shockwave.y, shockwave.radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.font = "800 18px Trebuchet MS";
+    for (const popup of scorePopups) {
+      ctx.globalAlpha = Math.min(1, popup.life / popup.maxLife * 2);
+      ctx.fillStyle = "#fff3ad";
+      ctx.shadowColor = "#ff9d3d";
+      ctx.shadowBlur = 8;
+      ctx.fillText(popup.text, popup.x, popup.y);
+    }
+    ctx.restore();
+  }
+
+  function drawMuzzleFlash(time) {
+    if (muzzleFlash <= 0) return;
+    const radius = 12 + Math.sin(time * 0.08) * 4;
+    ctx.save();
+    ctx.translate(player.x + 44, player.y);
+    ctx.fillStyle = "rgba(255, 244, 170, .95)";
+    ctx.shadowColor = "#ff9c34";
+    ctx.shadowBlur = 18;
+    ctx.beginPath();
+    ctx.moveTo(0, -6);
+    ctx.lineTo(radius + 16, 0);
+    ctx.lineTo(0, 6);
+    ctx.lineTo(6, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
 
   function draw(time) {
@@ -482,20 +694,40 @@
 
     for (const obstacle of obstacles) {
       if (obstacle.type === "plane") {
-        drawPlane(obstacle.x, obstacle.y, 0.82, obstacle.hit ? "#7b8990" : "#f1655f", -1, 0);
+        if (obstacle.fireTimer < 0.35 && obstacle.x < WIDTH - 60 && obstacle.x > player.x + 230) {
+          ctx.save();
+          ctx.globalAlpha = 0.35 + Math.sin(time * 0.035) * 0.2;
+          ctx.strokeStyle = "#ff604f";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(obstacle.x, obstacle.y, 48, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+        drawPlane(
+          obstacle.x,
+          obstacle.y,
+          obstacle.isAce ? 0.9 : 0.82,
+          obstacle.isAce ? "#dc3f5b" : "#f1655f",
+          -1,
+          obstacle.tilt
+        );
       } else {
         drawBalloon(obstacle);
       }
     }
 
     drawBullets();
+    drawEnemyBullets(time);
 
     if (state !== "gameover" || health > 0) {
       const blink = player.invulnerable > 0 && Math.floor(player.invulnerable * 12) % 2 === 0;
       if (!blink) drawPlane(player.x, player.y, 1, "#edf8ff", 1, player.tilt);
     }
 
+    drawMuzzleFlash(time);
     drawParticles();
+    drawCombatEffects();
     ctx.restore();
   }
 
@@ -535,6 +767,11 @@
       return;
     }
 
+    if (event.code === "Space" && state === "playing") {
+      fireBullet();
+      return;
+    }
+
     keys.add(event.code);
   });
 
@@ -549,8 +786,18 @@
     event.preventDefault();
   });
 
+  // Keep a mouse-specific fallback in addition to pointer events. Some browsers
+  // do not consistently dispatch right-button pointer events on canvas.
+  canvas.addEventListener("mousedown", (event) => {
+    if (event.button !== 2) return;
+    event.preventDefault();
+    rightMouseDown = true;
+    fireBullet();
+  });
+
   canvas.addEventListener("pointerdown", (event) => {
     if (event.button === 2) {
+      event.preventDefault();
       rightMouseDown = true;
       fireBullet();
       return;
@@ -563,6 +810,9 @@
     moveToPointer(event);
   });
   canvas.addEventListener("pointermove", (event) => {
+    if (event.pointerType === "mouse" && (event.buttons & 2) !== 0) {
+      rightMouseDown = true;
+    }
     if (pointerActive) moveToPointer(event);
   });
   canvas.addEventListener("pointerup", (event) => {

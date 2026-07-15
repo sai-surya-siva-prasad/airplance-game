@@ -9,12 +9,12 @@ Open `index.html` in a modern browser. No build step or local server is required
 ## Controls
 
 - **Arrow keys** or **WASD** — steer
-- **Right click** — fire bullets
+- **Right click / hold** or **Space** — fire the cannon
 - **Drag / touch** — steer toward your pointer
 - **P** — pause or resume
-- **Enter / Space** — start or restart
+- **Enter / Space** — start or restart from a menu
 
-You have three hull points. The flight gets faster over time. Destroying a hazard awards 100 points, and close passes award 150 bonus points.
+You have three hull points. The flight gets faster over time, enemy aces bank through the sky, and enemy aircraft begin shooting back after takeoff. A pulsing red ring warns you before an enemy fires. Destroying consecutive hazards builds a multiplier worth up to 500 points per hit; close passes award 150 bonus points.
 
 ## Project files
 
