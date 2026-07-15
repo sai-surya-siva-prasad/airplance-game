@@ -132,10 +132,18 @@
   ];
 
   const stars = [];
+  const powerups = [];
   let stageIndex = 0;
   let stageBanner = { text: "", sub: "", life: 0, maxLife: 2.4 };
   let lightningTimer = 4;
   let lightningFlash = 0;
+  let shieldTime = 0;
+  let tripleTime = 0;
+  let powerupTimer = 9;
+  let boss = null;
+  let bossDelay = 0;
+
+  const POWERUP_TYPES = ["shield", "triple", "repair"];
 
   function stageIndexForDistance(travelled) {
     let index = 0;
@@ -202,6 +210,105 @@
     const stage = STAGES[index];
     stageBanner = { text: `Stage ${index + 1}`, sub: stage.name, life: 2.4, maxLife: 2.4 };
     updateStageLabel();
+    if (index >= 1 && gameMode === "single") bossDelay = 2.6;
+  }
+
+  function spawnPowerup(x, y, forcedType) {
+    powerups.push({
+      type: forcedType || POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)],
+      x: x === undefined ? WIDTH + 30 : x,
+      y: y === undefined ? random(130, HEIGHT - 110) : y,
+      phase: random(0, Math.PI * 2),
+    });
+  }
+
+  function applyPowerup(powerup) {
+    if (powerup.type === "shield") {
+      shieldTime = 7;
+      scorePopups.push({ x: player.x, y: player.y - 40, text: "SHIELD", life: 0.9, maxLife: 0.9 });
+    } else if (powerup.type === "triple") {
+      tripleTime = 8;
+      scorePopups.push({ x: player.x, y: player.y - 40, text: "TRIPLE SHOT", life: 0.9, maxLife: 0.9 });
+    } else {
+      health = Math.min(3, health + 1);
+      updateHealth();
+      scorePopups.push({ x: player.x, y: player.y - 40, text: "REPAIRED", life: 0.9, maxLife: 0.9 });
+    }
+    burst(powerup.x, powerup.y, powerup.type === "repair" ? "#7dffa8" : "#59e6ff", 16, 0.6);
+  }
+
+  function spawnBoss() {
+    const difficulty = stageDifficulty();
+    boss = {
+      x: WIDTH + 160,
+      y: HEIGHT / 2,
+      targetX: WIDTH - 190,
+      width: 118,
+      height: 52,
+      health: 7 + stageIndex * 3,
+      maxHealth: 7 + stageIndex * 3,
+      phase: random(0, Math.PI * 2),
+      fireTimer: 1.4,
+      entering: true,
+      difficulty,
+    };
+    stageBanner = { text: "Warning", sub: "Stage guardian inbound", life: 2, maxLife: 2 };
+  }
+
+  function bossFireSpread() {
+    const aimX = player.x - (boss.x - 46);
+    const aimY = player.y - boss.y;
+    const baseAngle = Math.atan2(aimY, aimX);
+    const speed = 275 + stageIndex * 22;
+    for (const offset of [-0.24, 0, 0.24]) {
+      const angle = baseAngle + offset;
+      enemyBullets.push({
+        x: boss.x - 46,
+        y: boss.y,
+        previousX: boss.x - 46,
+        previousY: boss.y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        width: 12,
+        height: 8,
+        life: 5,
+      });
+    }
+    burst(boss.x - 48, boss.y, "#ff6f5d", 6, 0.25);
+  }
+
+  function killBoss() {
+    const points = 800 + stageIndex * 400;
+    score += points;
+    screenShake = 12;
+    burst(boss.x, boss.y, "#ffb44a", 42, 1.1);
+    burst(boss.x - 30, boss.y + 14, "#f1655f", 30, 0.9);
+    shockwaves.push({ x: boss.x, y: boss.y, radius: 14, life: 0.6, maxLife: 0.6, color: "#ffd97a" });
+    scorePopups.push({ x: boss.x, y: boss.y - 40, text: `BOSS DOWN +${points}`, life: 1.2, maxLife: 1.2 });
+    spawnPowerup(boss.x, boss.y, "repair");
+    boss = null;
+  }
+
+  function updateBoss(dt) {
+    if (boss.entering) {
+      boss.x += (boss.targetX - boss.x) * Math.min(1, dt * 2.4);
+      if (boss.x - boss.targetX < 8) boss.entering = false;
+      return;
+    }
+
+    boss.phase += dt;
+    boss.y = HEIGHT / 2 + Math.sin(boss.phase * 0.9) * 150;
+    boss.x = boss.targetX + Math.sin(boss.phase * 0.5) * 36;
+
+    boss.fireTimer -= dt;
+    if (boss.fireTimer <= 0) {
+      bossFireSpread();
+      boss.fireTimer = Math.max(1.05, 2.2 - stageIndex * 0.15);
+    }
+
+    if (player.invulnerable <= 0 && boxesOverlap(player, boss, 10)) {
+      damagePlayer(player.x + 20, player.y);
+    }
   }
 
   function updateStageLabel() {
@@ -300,6 +407,12 @@
     stageBanner.life = 0;
     lightningTimer = 4;
     lightningFlash = 0;
+    shieldTime = 0;
+    tripleTime = 0;
+    powerupTimer = 9;
+    boss = null;
+    bossDelay = 0;
+    powerups.length = 0;
     rightMouseDown = false;
     obstacles.length = 0;
     bullets.length = 0;
@@ -322,14 +435,18 @@
 
     const facing = localFacing();
     const spawnX = player.x + 42 * facing;
-    bullets.push({
-      x: spawnX,
-      previousX: spawnX,
-      y: player.y,
-      width: 24,
-      height: 7,
-      speed: BULLET_SPEED * facing,
-    });
+    const verticalSpeeds = tripleTime > 0 && gameMode === "single" ? [-140, 0, 140] : [0];
+    for (const vy of verticalSpeeds) {
+      bullets.push({
+        x: spawnX,
+        previousX: spawnX,
+        y: player.y,
+        width: 24,
+        height: 7,
+        speed: BULLET_SPEED * facing,
+        vy,
+      });
+    }
     fireCooldown = BULLET_COOLDOWN;
     muzzleFlash = 0.08;
     burst(player.x + 47 * facing, player.y, "#ffe08a", 7, 0.24);
@@ -353,11 +470,34 @@
     lastTime = performance.now();
   }
 
+  function readBestScore() {
+    try {
+      return Number(window.localStorage.getItem("skyace-best")) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function saveBestScore(value) {
+    try {
+      window.localStorage.setItem("skyace-best", String(value));
+    } catch {
+      /* storage unavailable (private mode) */
+    }
+  }
+
   function showGameOver() {
     state = "gameover";
     panelKicker.textContent = `Flight distance · ${distance.toFixed(1)} km · Stage ${stageIndex + 1} — ${STAGES[stageIndex].name}`;
     panelTitle.textContent = "Mayday!";
-    panelCopy.textContent = `Final score: ${Math.floor(score).toLocaleString()}. The squadron is ready when you are.`;
+    const finalScore = Math.floor(score);
+    const best = readBestScore();
+    if (finalScore > best) {
+      saveBestScore(finalScore);
+      panelCopy.textContent = `Final score: ${finalScore.toLocaleString()} — new personal best! The squadron is ready when you are.`;
+    } else {
+      panelCopy.textContent = `Final score: ${finalScore.toLocaleString()}. Personal best: ${best.toLocaleString()}. The squadron is ready when you are.`;
+    }
     startButton.innerHTML = "Fly again <span>→</span>";
     multiButton.classList.remove("is-hidden");
     mpPanel.classList.add("is-hidden");
@@ -470,6 +610,16 @@
 
   function damagePlayer(x, y) {
     if (player.invulnerable > 0) return false;
+
+    if (shieldTime > 0 && gameMode === "single") {
+      shieldTime = 0;
+      player.invulnerable = 0.5;
+      screenShake = Math.max(screenShake, 4);
+      burst(player.x, player.y, "#59e6ff", 22, 0.7);
+      shockwaves.push({ x: player.x, y: player.y, radius: 30, life: 0.45, maxLife: 0.45, color: "#59e6ff" });
+      scorePopups.push({ x: player.x, y: player.y - 40, text: "SHIELD DOWN", life: 0.9, maxLife: 0.9 });
+      return false;
+    }
 
     health -= 1;
     player.invulnerable = 1.25;
@@ -906,6 +1056,38 @@
       }
     }
 
+    shieldTime = Math.max(0, shieldTime - dt);
+    tripleTime = Math.max(0, tripleTime - dt);
+
+    if (bossDelay > 0) {
+      bossDelay -= dt;
+      if (bossDelay <= 0 && !boss) spawnBoss();
+    }
+    if (boss) {
+      updateBoss(dt);
+      if (health <= 0) return;
+    }
+
+    powerupTimer -= dt;
+    if (powerupTimer <= 0) {
+      spawnPowerup();
+      powerupTimer = random(11, 17);
+    }
+
+    for (let i = powerups.length - 1; i >= 0; i -= 1) {
+      const powerup = powerups[i];
+      powerup.x -= 92 * dt;
+      powerup.phase += dt * 3;
+      powerup.y += Math.sin(powerup.phase) * 14 * dt;
+      const pickupBox = { x: powerup.x, y: powerup.y, width: 34, height: 34 };
+      if (boxesOverlap(player, pickupBox, 0)) {
+        applyPowerup(powerup);
+        powerups.splice(i, 1);
+        continue;
+      }
+      if (powerup.x < -40) powerups.splice(i, 1);
+    }
+
     if (rightMouseDown || pointerActive || keys.has("Space")) fireBullet();
     movePlayer(dt);
 
@@ -926,7 +1108,7 @@
     }
 
     spawnTimer -= dt;
-    if (spawnTimer <= 0) {
+    if (spawnTimer <= 0 && !boss && bossDelay <= 0) {
       createObstacle();
       const difficulty = stageDifficulty();
       spawnTimer = Math.max(0.3, (random(0.78, 1.35) - elapsed * 0.006) / (1 + (difficulty - 1) * 0.7));
@@ -936,8 +1118,19 @@
       const bullet = bullets[i];
       bullet.previousX = bullet.x;
       bullet.x += bullet.speed * dt;
+      bullet.y += (bullet.vy || 0) * dt;
 
       let impact = false;
+
+      if (boss && !boss.entering && sweptBulletHits(bullet, boss)) {
+        boss.health -= 1;
+        score += 40;
+        burst(bullet.x, bullet.y, "#ffd97a", 8, 0.4);
+        if (boss.health <= 0) killBoss();
+        bullets.splice(i, 1);
+        continue;
+      }
+
       for (let j = obstacles.length - 1; j >= 0; j -= 1) {
         const obstacle = obstacles[j];
         if (obstacle.hit) continue;
@@ -1001,6 +1194,7 @@
       if (
         obstacle.type === "plane" &&
         elapsed > 6 &&
+        !boss &&
         obstacle.x < WIDTH - 60 &&
         obstacle.x > player.x + 230 &&
         obstacle.fireTimer <= 0
@@ -1462,6 +1656,68 @@
     ctx.restore();
   }
 
+  function drawPowerups(time) {
+    for (const powerup of powerups) {
+      const bob = Math.sin(time * 0.004 + powerup.phase) * 4;
+      const x = powerup.x;
+      const y = powerup.y + bob;
+      ctx.save();
+
+      const glowColor = powerup.type === "repair" ? "125, 255, 168" : "89, 230, 255";
+      const glow = ctx.createRadialGradient(x, y, 3, x, y, 26);
+      glow.addColorStop(0, `rgba(${glowColor}, .5)`);
+      glow.addColorStop(1, `rgba(${glowColor}, 0)`);
+      ctx.fillStyle = glow;
+      ctx.fillRect(x - 26, y - 26, 52, 52);
+
+      ctx.fillStyle = "rgba(6, 24, 44, .85)";
+      ctx.strokeStyle = powerup.type === "repair" ? "#7dffa8" : "#59e6ff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      if (powerup.type === "shield") {
+        ctx.strokeStyle = "#a6f0ff";
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(x, y, 8, -Math.PI * 0.85, Math.PI * 0.85);
+        ctx.stroke();
+      } else if (powerup.type === "triple") {
+        ctx.fillStyle = "#ffe08a";
+        for (const offset of [-6, 0, 6]) {
+          ctx.beginPath();
+          ctx.roundRect(x - 5, y + offset - 1.6, 10, 3.2, 2);
+          ctx.fill();
+        }
+      } else {
+        ctx.fillStyle = "#7dffa8";
+        ctx.fillRect(x - 2.2, y - 8, 4.4, 16);
+        ctx.fillRect(x - 8, y - 2.2, 16, 4.4);
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawBoss(time) {
+    const flash = boss.health < boss.maxHealth && Math.sin(time * 0.05) > 0.7;
+    drawPlane(boss.x, boss.y, 1.7, flash ? "#ff8f8a" : STAGES[stageIndex].space ? "#2f3550" : "#8e2f4d", -1, Math.sin(boss.phase || 0) * 0.06);
+
+    const barWidth = 130;
+    const ratio = Math.max(0, boss.health / boss.maxHealth);
+    ctx.save();
+    ctx.fillStyle = "rgba(4, 20, 38, .7)";
+    ctx.beginPath();
+    ctx.roundRect(boss.x - barWidth / 2, boss.y - 68, barWidth, 9, 4);
+    ctx.fill();
+    ctx.fillStyle = ratio > 0.4 ? "#ff704d" : "#ffd97a";
+    ctx.beginPath();
+    ctx.roundRect(boss.x - barWidth / 2 + 1.5, boss.y - 66.5, (barWidth - 3) * ratio, 6, 3);
+    ctx.fill();
+    ctx.restore();
+  }
+
   function drawMuzzleFlash(time) {
     if (muzzleFlash <= 0) return;
     const radius = 12 + Math.sin(time * 0.08) * 4;
@@ -1517,12 +1773,29 @@
       drawPlane(remote.x, remote.y, 1, "#f1655f", isHost ? -1 : 1, remote.tilt);
     }
 
+    if (boss) drawBoss(time);
+    drawPowerups(time);
     drawBullets();
     drawEnemyBullets(time);
 
     if (state !== "gameover" || health > 0) {
       const blink = player.invulnerable > 0 && Math.floor(player.invulnerable * 12) % 2 === 0;
       if (!blink) drawPlane(player.x, player.y, 1, "#edf8ff", localFacing(), player.tilt);
+      if (shieldTime > 0) {
+        const pulse = 1 + Math.sin(time * 0.012) * 0.06;
+        const fade = shieldTime < 1.5 ? 0.35 + 0.3 * Math.sin(time * 0.03) : 0.65;
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.strokeStyle = "#59e6ff";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.ellipse(player.x, player.y, 52 * pulse, 36 * pulse, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = fade * 0.16;
+        ctx.fillStyle = "#59e6ff";
+        ctx.fill();
+        ctx.restore();
+      }
     }
 
     drawMuzzleFlash(time);
@@ -1696,6 +1969,18 @@
   joinCodeInput.addEventListener("keydown", (event) => {
     event.stopPropagation();
     if (event.key === "Enter") joinRoom();
+  });
+
+  // Read-only snapshot for automated tests; exposes no mutating behavior.
+  window.skyaceDebug = () => ({
+    state,
+    stageIndex,
+    boss: boss ? { health: boss.health, maxHealth: boss.maxHealth, entering: boss.entering, x: boss.x, y: boss.y } : null,
+    powerups: powerups.map((p) => p.type),
+    shieldTime,
+    tripleTime,
+    health,
+    score: Math.floor(score),
   });
 
   initializeSky();
