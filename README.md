@@ -8,7 +8,7 @@ Open `index.html` in a modern browser. No build step or local server is required
 
 ## Modes
 
-- **Single flight** — survive the sky, dodge hazards, and chain hits for a score multiplier.
+- **Single flight** — fight through five themed stages of increasing difficulty: **Daybreak**, **Sunset Squadron**, **Night Raid** (moonlit, starry), **Storm Front** (rain and lightning), and **Deep Space** (asteroids, green enemy lasers, a ringed planet). Each stage spawns faster, tougher, more accurate enemies. Chain hits for a score multiplier.
 - **Multiplayer dogfight** — one player creates a room and shares the 4-letter code; the other joins from anywhere. Messages relay through public MQTT brokers over secure WebSockets, which works across home, office, and mobile networks without any game server — it runs straight from GitHub Pages. First to shoot the rival down wins, with instant rematches.
 
 ## Controls

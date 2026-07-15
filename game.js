@@ -70,6 +70,146 @@
   const seenOrder = [];
   const remote = { x: 0, y: 0, targetX: 0, targetY: 0, tilt: 0, health: 3, active: false };
 
+  const STAGES = [
+    {
+      name: "Daybreak",
+      at: 0,
+      top: [23, 111, 168],
+      mid: [86, 184, 221],
+      bottom: [183, 230, 237],
+      horizon: [24, 84, 121],
+      celestial: "sun",
+      cloudDim: 1,
+      difficulty: 1,
+    },
+    {
+      name: "Sunset Squadron",
+      at: 2,
+      top: [74, 32, 92],
+      mid: [217, 106, 78],
+      bottom: [247, 200, 115],
+      horizon: [58, 30, 58],
+      celestial: "sun-low",
+      cloudDim: 0.8,
+      difficulty: 1.25,
+    },
+    {
+      name: "Night Raid",
+      at: 4,
+      top: [4, 18, 43],
+      mid: [13, 43, 78],
+      bottom: [32, 72, 110],
+      horizon: [8, 22, 42],
+      celestial: "moon",
+      stars: true,
+      cloudDim: 0.4,
+      difficulty: 1.5,
+    },
+    {
+      name: "Storm Front",
+      at: 6.5,
+      top: [20, 28, 38],
+      mid: [55, 72, 90],
+      bottom: [92, 112, 128],
+      horizon: [16, 24, 34],
+      rain: true,
+      lightning: true,
+      cloudDim: 0.75,
+      difficulty: 1.75,
+    },
+    {
+      name: "Deep Space",
+      at: 9,
+      top: [2, 3, 15],
+      mid: [10, 13, 42],
+      bottom: [22, 27, 66],
+      horizon: [8, 10, 30],
+      stars: true,
+      space: true,
+      cloudDim: 0,
+      difficulty: 2.05,
+    },
+  ];
+
+  const stars = [];
+  let stageIndex = 0;
+  let stageBanner = { text: "", sub: "", life: 0, maxLife: 2.4 };
+  let lightningTimer = 4;
+  let lightningFlash = 0;
+
+  function stageIndexForDistance(travelled) {
+    let index = 0;
+    for (let i = 0; i < STAGES.length; i += 1) {
+      if (travelled >= STAGES[i].at) index = i;
+    }
+    return index;
+  }
+
+  function stageDifficulty() {
+    if (gameMode === "versus") return 1;
+    return STAGES[stageIndexForDistance(distance)].difficulty;
+  }
+
+  function lerp(a, b, t) {
+    return a + (b - a) * t;
+  }
+
+  function lerpColor(from, to, t) {
+    return [Math.round(lerp(from[0], to[0], t)), Math.round(lerp(from[1], to[1], t)), Math.round(lerp(from[2], to[2], t))];
+  }
+
+  function css(color, alpha = 1) {
+    return `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+  }
+
+  function blendedPalette() {
+    const travelled = gameMode === "versus" ? 0 : distance;
+    const index = stageIndexForDistance(travelled);
+    const stage = STAGES[index];
+    if (index === 0) {
+      return {
+        index,
+        top: stage.top,
+        mid: stage.mid,
+        bottom: stage.bottom,
+        horizon: stage.horizon,
+        celestial: stage.celestial,
+        cloudDim: stage.cloudDim,
+        starsAlpha: 0,
+        rainAlpha: 0,
+        spaceAlpha: 0,
+        lightning: false,
+      };
+    }
+    const previous = STAGES[index - 1];
+    const t = Math.min(1, (travelled - stage.at) / 0.35);
+    return {
+      index,
+      top: lerpColor(previous.top, stage.top, t),
+      mid: lerpColor(previous.mid, stage.mid, t),
+      bottom: lerpColor(previous.bottom, stage.bottom, t),
+      horizon: lerpColor(previous.horizon, stage.horizon, t),
+      celestial: t < 0.5 ? previous.celestial : stage.celestial,
+      cloudDim: lerp(previous.cloudDim, stage.cloudDim, t),
+      starsAlpha: (previous.stars ? 1 - t : 0) + (stage.stars ? t : 0),
+      rainAlpha: (previous.rain ? 1 - t : 0) + (stage.rain ? t : 0),
+      spaceAlpha: (previous.space ? 1 - t : 0) + (stage.space ? t : 0),
+      lightning: stage.lightning && t > 0.4,
+    };
+  }
+
+  function announceStage(index) {
+    const stage = STAGES[index];
+    stageBanner = { text: `Stage ${index + 1}`, sub: stage.name, life: 2.4, maxLife: 2.4 };
+    updateStageLabel();
+  }
+
+  function updateStageLabel() {
+    if (gameMode === "versus") return;
+    const stage = STAGES[stageIndex];
+    distanceLabel.textContent = `Stage ${stageIndex + 1} · ${stage.name}`;
+  }
+
   function localFacing() {
     return gameMode === "versus" && !isHost ? -1 : 1;
   }
@@ -92,6 +232,7 @@
   function initializeSky() {
     clouds.length = 0;
     streaks.length = 0;
+    stars.length = 0;
 
     for (let i = 0; i < 12; i += 1) {
       clouds.push({
@@ -109,6 +250,15 @@
         y: random(0, HEIGHT),
         length: random(15, 70),
         speed: random(100, 180),
+      });
+    }
+
+    for (let i = 0; i < 70; i += 1) {
+      stars.push({
+        x: random(0, WIDTH),
+        y: random(0, HEIGHT - 60),
+        size: random(0.6, 2.2),
+        twinkle: random(0, Math.PI * 2),
       });
     }
   }
@@ -146,6 +296,10 @@
     muzzleFlash = 0;
     combo = 0;
     comboTimer = 0;
+    stageIndex = 0;
+    stageBanner.life = 0;
+    lightningTimer = 4;
+    lightningFlash = 0;
     rightMouseDown = false;
     obstacles.length = 0;
     bullets.length = 0;
@@ -182,11 +336,18 @@
     sendMessage({ t: "fire", x: spawnX, y: player.y, v: BULLET_SPEED * facing });
   }
 
+  // Debug/preview helper: open the page with ?km=9 to start that far in.
+  const START_KM = Math.max(0, parseFloat(new URLSearchParams(window.location.search).get("km")) || 0);
+
   function startGame() {
     destroyNetwork();
     gameMode = "single";
-    distanceLabel.textContent = "Distance";
     resetGame();
+    if (START_KM > 0) {
+      distance = START_KM;
+      stageIndex = stageIndexForDistance(distance);
+    }
+    updateStageLabel();
     state = "playing";
     overlay.classList.add("hidden");
     lastTime = performance.now();
@@ -194,7 +355,7 @@
 
   function showGameOver() {
     state = "gameover";
-    panelKicker.textContent = `Flight distance · ${distance.toFixed(1)} km`;
+    panelKicker.textContent = `Flight distance · ${distance.toFixed(1)} km · Stage ${stageIndex + 1} — ${STAGES[stageIndex].name}`;
     panelTitle.textContent = "Mayday!";
     panelCopy.textContent = `Final score: ${Math.floor(score).toLocaleString()}. The squadron is ready when you are.`;
     startButton.innerHTML = "Fly again <span>→</span>";
@@ -231,7 +392,7 @@
     panelKicker.textContent = "Ready for takeoff?";
     panelTitle.textContent = "Skyline Ace";
     panelCopy.textContent =
-      "Enemy aces shoot back and attack faster as you fly. Watch for the red lock-on ring, dodge incoming fire, and chain hits for a score multiplier.";
+      "Fight through five stages — daybreak, sunset, night, storm, and deep space — each faster and meaner than the last. Watch for the red lock-on ring and chain hits for a score multiplier.";
     startButton.innerHTML = "Single flight <span>→</span>";
     modeButtons.classList.remove("is-hidden");
     multiButton.classList.remove("is-hidden");
@@ -257,10 +418,12 @@
   }
 
   function createObstacle() {
+    const difficulty = stageDifficulty();
     const type = Math.random() < 0.68 ? "plane" : "balloon";
-    const speed = 225 + Math.min(elapsed, 90) * 2.2 + random(0, 60);
+    const speed = (225 + Math.min(elapsed, 90) * 2.2 + random(0, 60)) * (1 + (difficulty - 1) * 0.45);
     const y = random(100, HEIGHT - 85);
-    const isAce = type === "plane" && elapsed > 18 && Math.random() < Math.min(0.45, elapsed / 130);
+    const isAce =
+      type === "plane" && elapsed > 18 && Math.random() < Math.min(0.65, elapsed / 130 + (difficulty - 1) * 0.35);
     const phase = random(0, Math.PI * 2);
     const amplitude = type === "plane" ? random(12, isAce ? 64 : 30) : random(16, 28);
 
@@ -726,6 +889,23 @@
     muzzleFlash = Math.max(0, muzzleFlash - dt);
     comboTimer = Math.max(0, comboTimer - dt);
     if (comboTimer === 0) combo = 0;
+
+    const newStageIndex = stageIndexForDistance(distance);
+    if (newStageIndex !== stageIndex) {
+      stageIndex = newStageIndex;
+      announceStage(stageIndex);
+    }
+    stageBanner.life = Math.max(0, stageBanner.life - dt);
+    lightningFlash = Math.max(0, lightningFlash - dt * 2.4);
+    if (STAGES[stageIndex].lightning) {
+      lightningTimer -= dt;
+      if (lightningTimer <= 0) {
+        lightningFlash = 0.75;
+        screenShake = Math.max(screenShake, 4);
+        lightningTimer = random(2.5, 6.5);
+      }
+    }
+
     if (rightMouseDown || pointerActive || keys.has("Space")) fireBullet();
     movePlayer(dt);
 
@@ -748,7 +928,8 @@
     spawnTimer -= dt;
     if (spawnTimer <= 0) {
       createObstacle();
-      spawnTimer = Math.max(0.36, random(0.78, 1.35) - elapsed * 0.006);
+      const difficulty = stageDifficulty();
+      spawnTimer = Math.max(0.3, (random(0.78, 1.35) - elapsed * 0.006) / (1 + (difficulty - 1) * 0.7));
     }
 
     for (let i = bullets.length - 1; i >= 0; i -= 1) {
@@ -825,7 +1006,7 @@
         obstacle.fireTimer <= 0
       ) {
         fireEnemyBullet(obstacle);
-        obstacle.fireTimer = Math.max(0.75, random(1.25, 2.4) - elapsed * 0.006);
+        obstacle.fireTimer = Math.max(0.6, (random(1.25, 2.4) - elapsed * 0.006) / (1 + (stageDifficulty() - 1) * 0.5));
       }
 
       if (!obstacle.hit && player.invulnerable <= 0 && boxesOverlap(player, obstacle, 7)) {
@@ -954,31 +1135,100 @@
   }
 
   function drawBackground(time) {
+    const palette = blendedPalette();
+
     const gradient = ctx.createLinearGradient(0, 0, 0, HEIGHT);
-    gradient.addColorStop(0, "#176fa8");
-    gradient.addColorStop(0.56, "#56b8dd");
-    gradient.addColorStop(1, "#b7e6ed");
+    gradient.addColorStop(0, css(palette.top));
+    gradient.addColorStop(0.56, css(palette.mid));
+    gradient.addColorStop(1, css(palette.bottom));
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
-    const sunGlow = ctx.createRadialGradient(780, 100, 10, 780, 100, 130);
-    sunGlow.addColorStop(0, "rgba(255,245,195,.76)");
-    sunGlow.addColorStop(1, "rgba(255,245,195,0)");
-    ctx.fillStyle = sunGlow;
-    ctx.fillRect(630, -50, 300, 300);
-
-    for (const cloud of clouds) drawCloud(cloud);
-
-    ctx.fillStyle = "rgba(24, 84, 121, .24)";
-    ctx.beginPath();
-    ctx.moveTo(0, HEIGHT);
-    for (let x = 0; x <= WIDTH; x += 80) {
-      const y = 490 + Math.sin(x * 0.012 + time * 0.00005) * 20;
-      ctx.lineTo(x, y);
+    if (palette.starsAlpha > 0.02) {
+      ctx.save();
+      for (const star of stars) {
+        const twinkle = 0.55 + 0.45 * Math.sin(time * 0.003 + star.twinkle);
+        ctx.globalAlpha = palette.starsAlpha * twinkle;
+        ctx.fillStyle = "#eaf6ff";
+        ctx.fillRect(star.x, star.y, star.size, star.size);
+      }
+      ctx.restore();
     }
-    ctx.lineTo(WIDTH, HEIGHT);
-    ctx.closePath();
-    ctx.fill();
+
+    if (palette.celestial === "sun") {
+      const sunGlow = ctx.createRadialGradient(780, 100, 10, 780, 100, 130);
+      sunGlow.addColorStop(0, "rgba(255,245,195,.76)");
+      sunGlow.addColorStop(1, "rgba(255,245,195,0)");
+      ctx.fillStyle = sunGlow;
+      ctx.fillRect(630, -50, 300, 300);
+    } else if (palette.celestial === "sun-low") {
+      const sunGlow = ctx.createRadialGradient(780, 330, 20, 780, 330, 190);
+      sunGlow.addColorStop(0, "rgba(255,171,84,.9)");
+      sunGlow.addColorStop(0.35, "rgba(255,140,80,.4)");
+      sunGlow.addColorStop(1, "rgba(255,140,80,0)");
+      ctx.fillStyle = sunGlow;
+      ctx.fillRect(560, 130, 440, 400);
+      ctx.fillStyle = "#ffd9a0";
+      ctx.beginPath();
+      ctx.arc(780, 330, 34, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (palette.celestial === "moon") {
+      const moonGlow = ctx.createRadialGradient(780, 100, 10, 780, 100, 110);
+      moonGlow.addColorStop(0, "rgba(214,235,255,.5)");
+      moonGlow.addColorStop(1, "rgba(214,235,255,0)");
+      ctx.fillStyle = moonGlow;
+      ctx.fillRect(650, -30, 260, 260);
+      ctx.fillStyle = "#e8f2fb";
+      ctx.beginPath();
+      ctx.arc(780, 100, 30, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = css(palette.top, 0.85);
+      ctx.beginPath();
+      ctx.arc(792, 92, 26, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (palette.spaceAlpha > 0.02) {
+      ctx.save();
+      ctx.globalAlpha = palette.spaceAlpha;
+      const planetGradient = ctx.createRadialGradient(788, 122, 12, 800, 130, 62);
+      planetGradient.addColorStop(0, "#ffcf9e");
+      planetGradient.addColorStop(0.55, "#d98d5a");
+      planetGradient.addColorStop(1, "#8a4a3a");
+      ctx.fillStyle = planetGradient;
+      ctx.beginPath();
+      ctx.arc(800, 130, 52, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(233, 208, 176, .75)";
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.ellipse(800, 130, 84, 20, -0.32, 0, Math.PI * 2);
+      ctx.stroke();
+
+      const nebula = ctx.createRadialGradient(220, 420, 30, 220, 420, 240);
+      nebula.addColorStop(0, "rgba(120, 80, 200, .16)");
+      nebula.addColorStop(1, "rgba(120, 80, 200, 0)");
+      ctx.fillStyle = nebula;
+      ctx.fillRect(0, 180, 520, 420);
+      ctx.restore();
+    }
+
+    if (palette.cloudDim > 0.02) {
+      for (const cloud of clouds) drawCloud(cloud, palette.cloudDim);
+    }
+
+    if (palette.spaceAlpha < 0.6) {
+      ctx.fillStyle = css(palette.horizon, 0.24 * (1 - palette.spaceAlpha));
+      ctx.beginPath();
+      ctx.moveTo(0, HEIGHT);
+      for (let x = 0; x <= WIDTH; x += 80) {
+        const y = 490 + Math.sin(x * 0.012 + time * 0.00005) * 20;
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(WIDTH, HEIGHT);
+      ctx.closePath();
+      ctx.fill();
+    }
 
     ctx.strokeStyle = "rgba(222, 250, 255, .18)";
     ctx.lineWidth = 1;
@@ -988,11 +1238,29 @@
       ctx.lineTo(streak.x + streak.length, streak.y);
       ctx.stroke();
     }
+
+    if (palette.rainAlpha > 0.02) {
+      ctx.save();
+      ctx.strokeStyle = `rgba(178, 202, 224, ${0.4 * palette.rainAlpha})`;
+      ctx.lineWidth = 1.4;
+      for (const streak of streaks) {
+        ctx.beginPath();
+        ctx.moveTo(streak.x, streak.y);
+        ctx.lineTo(streak.x - 13, streak.y + 30);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    if (lightningFlash > 0.02) {
+      ctx.fillStyle = `rgba(235, 244, 255, ${lightningFlash * 0.42})`;
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    }
   }
 
-  function drawCloud(cloud) {
+  function drawCloud(cloud, dim = 1) {
     ctx.save();
-    ctx.globalAlpha = cloud.alpha;
+    ctx.globalAlpha = cloud.alpha * dim;
     ctx.fillStyle = "#f2fbff";
     ctx.beginPath();
     ctx.ellipse(cloud.x, cloud.y, cloud.size, cloud.size * 0.27, 0, 0, Math.PI * 2);
@@ -1048,7 +1316,41 @@
     ctx.restore();
   }
 
+  function drawAsteroid(obstacle) {
+    ctx.save();
+    ctx.translate(obstacle.x, obstacle.y);
+    ctx.rotate(obstacle.phase * 0.35);
+
+    const rockGradient = ctx.createRadialGradient(-7, -8, 3, 0, 0, 30);
+    rockGradient.addColorStop(0, "#b3a89b");
+    rockGradient.addColorStop(0.55, "#7d7367");
+    rockGradient.addColorStop(1, "#4c443c");
+    ctx.fillStyle = rockGradient;
+    ctx.beginPath();
+    ctx.moveTo(-22, -6);
+    ctx.lineTo(-12, -22);
+    ctx.lineTo(6, -24);
+    ctx.lineTo(21, -12);
+    ctx.lineTo(24, 6);
+    ctx.lineTo(12, 22);
+    ctx.lineTo(-8, 23);
+    ctx.lineTo(-21, 12);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(30, 26, 22, .45)";
+    ctx.beginPath();
+    ctx.arc(-6, 4, 5, 0, Math.PI * 2);
+    ctx.arc(9, -7, 3.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   function drawBalloon(obstacle) {
+    if (STAGES[stageIndex].space) {
+      drawAsteroid(obstacle);
+      return;
+    }
     ctx.save();
     ctx.translate(obstacle.x, obstacle.y);
     const balloonGradient = ctx.createRadialGradient(-8, -15, 2, 0, -12, 24);
@@ -1107,14 +1409,21 @@
   }
 
   function drawEnemyBullets(time) {
+    const spaceLasers = STAGES[stageIndex].space && gameMode === "single";
     for (const bullet of enemyBullets) {
       const pulse = 1 + Math.sin(time * 0.02 + bullet.x * 0.04) * 0.22;
       const tailX = bullet.x - bullet.vx * 0.075;
       const tailY = bullet.y - bullet.vy * 0.075;
       const gradient = ctx.createLinearGradient(tailX, tailY, bullet.x, bullet.y);
-      gradient.addColorStop(0, "rgba(255, 75, 60, 0)");
-      gradient.addColorStop(0.7, "rgba(255, 100, 70, .6)");
-      gradient.addColorStop(1, "#fff1d0");
+      if (spaceLasers) {
+        gradient.addColorStop(0, "rgba(80, 255, 120, 0)");
+        gradient.addColorStop(0.7, "rgba(90, 255, 130, .65)");
+        gradient.addColorStop(1, "#eafff0");
+      } else {
+        gradient.addColorStop(0, "rgba(255, 75, 60, 0)");
+        gradient.addColorStop(0.7, "rgba(255, 100, 70, .6)");
+        gradient.addColorStop(1, "#fff1d0");
+      }
       ctx.strokeStyle = gradient;
       ctx.lineWidth = 5 * pulse;
       ctx.beginPath();
@@ -1190,11 +1499,12 @@
           ctx.stroke();
           ctx.restore();
         }
+        const spaceStage = STAGES[stageIndex].space;
         drawPlane(
           obstacle.x,
           obstacle.y,
           obstacle.isAce ? 0.9 : 0.82,
-          obstacle.isAce ? "#dc3f5b" : "#f1655f",
+          spaceStage ? (obstacle.isAce ? "#3d4463" : "#565e80") : obstacle.isAce ? "#dc3f5b" : "#f1655f",
           -1,
           obstacle.tilt
         );
@@ -1218,6 +1528,23 @@
     drawMuzzleFlash(time);
     drawParticles();
     drawCombatEffects();
+
+    if (stageBanner.life > 0) {
+      const fade = Math.min(1, stageBanner.life / 0.45, (stageBanner.maxLife - stageBanner.life) / 0.35);
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, fade);
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffffff";
+      ctx.shadowColor = "rgba(0,0,0,.55)";
+      ctx.shadowBlur = 14;
+      ctx.font = "800 21px Trebuchet MS";
+      ctx.fillText(stageBanner.text.toUpperCase(), WIDTH / 2, HEIGHT / 2 - 78);
+      ctx.font = "800 44px Trebuchet MS";
+      ctx.fillStyle = "#ffd97a";
+      ctx.fillText(stageBanner.sub.toUpperCase(), WIDTH / 2, HEIGHT / 2 - 32);
+      ctx.restore();
+    }
+
     ctx.restore();
   }
 
