@@ -54,7 +54,7 @@
   let comboTimer = 0;
 
   let gameMode = "single";
-  let mqttClient = null;
+  let mqttClients = [];
   let conn = null;
   let isHost = false;
   let netTimer = 0;
@@ -64,6 +64,10 @@
   let connectTimeout = null;
   let lastReceivedAt = 0;
   let round = 0;
+  let mySid = "";
+  let sendSeq = 0;
+  const seenKeys = new Set();
+  const seenOrder = [];
   const remote = { x: 0, y: 0, targetX: 0, targetY: 0, tilt: 0, health: 3, active: false };
 
   function localFacing() {
@@ -335,23 +339,31 @@
     heartbeatTimer = null;
     handshakeTimer = null;
     connectTimeout = null;
-    if (mqttClient) {
+    if (conn && conn.open) publishToRival({ t: "bye" });
+    for (const client of mqttClients) {
       try {
-        if (conn && conn.open && mqttClient.connected) {
-          mqttClient.publish(rivalTopic(), JSON.stringify({ t: "bye" }));
-        }
-        mqttClient.end(true);
+        client.end(true);
       } catch {
         /* already closed */
       }
-      mqttClient = null;
     }
+    mqttClients = [];
     conn = null;
     roomCode = "";
+    sendSeq = 0;
+    seenKeys.clear();
+    seenOrder.length = 0;
   }
 
   const ROOM_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-  const MQTT_BROKER = "wss://broker.emqx.io:8084/mqtt";
+  // Several public brokers on different ports: players connect to all of
+  // them at once, so the duel works as long as each side can reach at least
+  // one broker in common. Messages carry sequence ids and are deduplicated.
+  const MQTT_BROKERS = [
+    "wss://broker.emqx.io:8084/mqtt",
+    "wss://broker.hivemq.com:8884/mqtt",
+    "wss://test.mosquitto.org:8081",
+  ];
 
   function generateRoomCode() {
     let code = "";
@@ -377,58 +389,83 @@
     return `skyace-duel/${roomCode}/${isHost ? "g" : "h"}`;
   }
 
+  function publishToRival(message) {
+    message.sid = mySid;
+    message.q = ++sendSeq;
+    const transient = message.t === "s" || message.t === "hb";
+    const payload = JSON.stringify(message);
+    for (const client of mqttClients) {
+      if (client.connected) client.publish(rivalTopic(), payload, { qos: transient ? 0 : 1 });
+    }
+  }
+
+  function alreadySeen(message) {
+    if (message.sid === undefined || message.q === undefined) return false;
+    const key = `${message.sid}:${message.q}`;
+    if (seenKeys.has(key)) return true;
+    seenKeys.add(key);
+    seenOrder.push(key);
+    if (seenOrder.length > 600) seenKeys.delete(seenOrder.shift());
+    return false;
+  }
+
   function openBroker(onReady) {
-    mqttClient = window.mqtt.connect(MQTT_BROKER, {
-      connectTimeout: 8000,
-      keepalive: 30,
-      clean: true,
-    });
+    mySid = Math.random().toString(36).slice(2, 8);
+    let readyFired = false;
 
     connectTimeout = setTimeout(() => {
-      if (mqttClient && !mqttClient.connected) {
+      if (!mqttClients.some((client) => client.connected)) {
         destroyNetwork();
-        mpStatus.textContent = "Could not reach the relay server. Check your connection and try again.";
+        mpStatus.textContent =
+          "Could not reach any relay server. Your network may block WebSockets — try a different network or a phone hotspot.";
       }
     }, 12000);
 
-    let readyFired = false;
-    mqttClient.on("connect", () => {
-      clearTimeout(connectTimeout);
-      if (readyFired) return;
-      readyFired = true;
-      mqttClient.subscribe(ownTopic(), (error) => {
-        if (error) {
-          destroyNetwork();
-          mpStatus.textContent = "Relay subscription failed. Try again.";
+    for (const brokerUrl of MQTT_BROKERS) {
+      let client;
+      try {
+        client = window.mqtt.connect(brokerUrl, {
+          connectTimeout: 8000,
+          keepalive: 30,
+          clean: true,
+        });
+      } catch {
+        continue;
+      }
+      mqttClients.push(client);
+
+      client.on("connect", () => {
+        client.subscribe(ownTopic(), (error) => {
+          if (error || readyFired) return;
+          readyFired = true;
+          clearTimeout(connectTimeout);
+          connectTimeout = null;
+          onReady();
+        });
+      });
+
+      client.on("message", (topic, payload) => {
+        let message = null;
+        try {
+          message = JSON.parse(payload.toString());
+        } catch {
           return;
         }
-        onReady();
+        if (alreadySeen(message)) return;
+        handleTransportMessage(message);
       });
-    });
 
-    mqttClient.on("message", (topic, payload) => {
-      let message = null;
-      try {
-        message = JSON.parse(payload.toString());
-      } catch {
-        return;
-      }
-      handleTransportMessage(message);
-    });
-
-    mqttClient.on("error", () => {
-      if (!conn) mpStatus.textContent = "Relay connection error. Try again.";
-    });
+      client.on("error", () => {
+        /* other brokers may still connect; the overall timeout reports failure */
+      });
+    }
   }
 
   function establishLink() {
     conn = {
       open: true,
       send(message) {
-        if (mqttClient && mqttClient.connected) {
-          const transient = message.t === "s" || message.t === "hb";
-          mqttClient.publish(rivalTopic(), JSON.stringify(message), { qos: transient ? 0 : 1 });
-        }
+        publishToRival(message);
       },
     };
     round = 1;
@@ -531,7 +568,7 @@
       mpStatus.textContent = "Looking for the room…";
       let attempts = 0;
       const sayHello = () => {
-        if (conn || !mqttClient || !mqttClient.connected) return;
+        if (conn || !mqttClients.some((client) => client.connected)) return;
         attempts += 1;
         if (attempts > 15) {
           destroyNetwork();
@@ -539,7 +576,7 @@
             "No answer from that room. Double-check the code and make sure your rival's page is still open, then try again.";
           return;
         }
-        mqttClient.publish(rivalTopic(), JSON.stringify({ t: "hello" }), { qos: 1 });
+        publishToRival({ t: "hello" });
       };
       sayHello();
       handshakeTimer = setInterval(sayHello, 1000);
