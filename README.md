@@ -9,7 +9,7 @@ Open `index.html` in a modern browser. No build step or local server is required
 ## Modes
 
 - **Single flight** — survive the sky, dodge hazards, and chain hits for a score multiplier.
-- **Multiplayer dogfight** — one player creates a room and shares the 4-letter code; the other joins from anywhere. The connection is peer-to-peer (WebRTC via [PeerJS](https://peerjs.com)), so no game server is needed — it works straight from GitHub Pages. First to shoot the rival down wins, with instant rematches.
+- **Multiplayer dogfight** — one player creates a room and shares the 4-letter code; the other joins from anywhere. Messages relay through a public MQTT broker over secure WebSockets, which works across home, office, and mobile networks without any game server — it runs straight from GitHub Pages. First to shoot the rival down wins, with instant rematches.
 
 ## Controls
 
@@ -27,4 +27,4 @@ You have three hull points. The flight gets faster over time, enemy aces bank th
 - `styles.css` — responsive presentation
 - `game.js` — game loop, input, collisions, networking, and Canvas rendering
 
-Multiplayer uses the free PeerJS cloud for the connection handshake only; gameplay traffic flows directly between the two browsers.
+Multiplayer relays gameplay messages through a free public MQTT broker (EMQX) over WSS. Room topics are namespaced by the 4-letter room code.
