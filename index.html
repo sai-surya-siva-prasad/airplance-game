@@ -51,8 +51,28 @@
               <div><kbd>Space</kbd><span>keyboard fire</span></div>
               <div><kbd>Drag</kbd><span>fires on touch too</span></div>
             </div>
-            <button id="startButton" type="button">Start flight <span>→</span></button>
-            <p class="microcopy">Press Enter or Space to launch</p>
+            <div id="modeButtons" class="mode-buttons">
+              <button id="startButton" type="button">Single flight <span>→</span></button>
+              <button id="multiButton" type="button" class="button-secondary">Multiplayer dogfight</button>
+            </div>
+            <div id="mpPanel" class="mp-panel is-hidden">
+              <button id="createRoomButton" type="button">Create room</button>
+              <p class="mp-divider">or join a friend</p>
+              <div class="mp-join">
+                <input
+                  id="joinCodeInput"
+                  autocomplete="off"
+                  spellcheck="false"
+                  maxlength="4"
+                  placeholder="CODE"
+                  aria-label="Room code"
+                />
+                <button id="joinRoomButton" type="button">Join</button>
+              </div>
+              <p id="mpStatus" class="mp-status" role="status"></p>
+              <button id="mpBackButton" type="button" class="button-ghost">← Back</button>
+            </div>
+            <p class="microcopy">Press Enter or Space to launch a single flight</p>
           </div>
         </div>
 
@@ -61,10 +81,11 @@
 
       <footer>
         <p><strong>Controls:</strong> Arrow keys / WASD · Click, hold, or Space to fire · P to pause</p>
-        <p>Red ring means incoming fire. Chain hits for up to 5× points.</p>
+        <p>Fly solo, or share a room code and dogfight a friend online.</p>
       </footer>
     </main>
 
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

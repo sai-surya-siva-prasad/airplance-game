@@ -11,6 +11,15 @@
   const scoreElement = document.getElementById("score");
   const distanceElement = document.getElementById("distance");
   const healthElement = document.getElementById("health");
+  const distanceLabel = distanceElement.previousElementSibling;
+  const modeButtons = document.getElementById("modeButtons");
+  const multiButton = document.getElementById("multiButton");
+  const mpPanel = document.getElementById("mpPanel");
+  const createRoomButton = document.getElementById("createRoomButton");
+  const joinCodeInput = document.getElementById("joinCodeInput");
+  const joinRoomButton = document.getElementById("joinRoomButton");
+  const mpStatus = document.getElementById("mpStatus");
+  const mpBackButton = document.getElementById("mpBackButton");
 
   const WIDTH = canvas.width;
   const HEIGHT = canvas.height;
@@ -43,6 +52,17 @@
   let muzzleFlash = 0;
   let combo = 0;
   let comboTimer = 0;
+
+  let gameMode = "single";
+  let peer = null;
+  let conn = null;
+  let isHost = false;
+  let netTimer = 0;
+  const remote = { x: 0, y: 0, targetX: 0, targetY: 0, tilt: 0, health: 3, active: false };
+
+  function localFacing() {
+    return gameMode === "versus" && !isHost ? -1 : 1;
+  }
 
   const player = {
     x: 180,
@@ -95,7 +115,14 @@
 
   function updateHud() {
     scoreElement.textContent = Math.floor(score).toString().padStart(5, "0");
+    if (gameMode === "versus") return;
     distanceElement.textContent = `${distance.toFixed(1)} km`;
+  }
+
+  function updateRivalHud() {
+    const remaining = Math.max(0, Math.min(3, remote.health));
+    distanceLabel.textContent = "Rival hull";
+    distanceElement.textContent = "●".repeat(remaining) + "○".repeat(3 - remaining);
   }
 
   function resetGame() {
@@ -129,20 +156,26 @@
   function fireBullet() {
     if (state !== "playing" || fireCooldown > 0) return;
 
+    const facing = localFacing();
+    const spawnX = player.x + 42 * facing;
     bullets.push({
-      x: player.x + 42,
-      previousX: player.x + 42,
+      x: spawnX,
+      previousX: spawnX,
       y: player.y,
       width: 24,
       height: 7,
-      speed: BULLET_SPEED,
+      speed: BULLET_SPEED * facing,
     });
     fireCooldown = BULLET_COOLDOWN;
     muzzleFlash = 0.08;
-    burst(player.x + 47, player.y, "#ffe08a", 7, 0.24);
+    burst(player.x + 47 * facing, player.y, "#ffe08a", 7, 0.24);
+    sendMessage({ t: "fire", x: spawnX, y: player.y, v: BULLET_SPEED * facing });
   }
 
   function startGame() {
+    destroyNetwork();
+    gameMode = "single";
+    distanceLabel.textContent = "Distance";
     resetGame();
     state = "playing";
     overlay.classList.add("hidden");
@@ -155,6 +188,45 @@
     panelTitle.textContent = "Mayday!";
     panelCopy.textContent = `Final score: ${Math.floor(score).toLocaleString()}. The squadron is ready when you are.`;
     startButton.innerHTML = "Fly again <span>→</span>";
+    multiButton.classList.remove("is-hidden");
+    mpPanel.classList.add("is-hidden");
+    modeButtons.classList.remove("is-hidden");
+    overlay.classList.remove("hidden");
+  }
+
+  function endVersus(won, kicker) {
+    state = "gameover";
+    remote.active = true;
+    panelKicker.textContent = kicker || (won ? "Enemy splashed" : "Hull destroyed");
+    panelTitle.textContent = won ? "Victory!" : "Defeated";
+    panelCopy.textContent = won
+      ? `Your rival went down in flames. Hits scored: ${Math.floor(score / 100)}.`
+      : "Your plane is in the drink. Call for a rematch and even the score.";
+    const connected = conn && conn.open;
+    startButton.innerHTML = connected ? "Rematch <span>→</span>" : "Back to menu <span>→</span>";
+    modeButtons.classList.remove("is-hidden");
+    multiButton.classList.add("is-hidden");
+    mpPanel.classList.add("is-hidden");
+    overlay.classList.remove("hidden");
+  }
+
+  function resetToMenu() {
+    destroyNetwork();
+    gameMode = "single";
+    isHost = false;
+    remote.active = false;
+    distanceLabel.textContent = "Distance";
+    resetGame();
+    state = "menu";
+    panelKicker.textContent = "Ready for takeoff?";
+    panelTitle.textContent = "Skyline Ace";
+    panelCopy.textContent =
+      "Enemy aces shoot back and attack faster as you fly. Watch for the red lock-on ring, dodge incoming fire, and chain hits for a score multiplier.";
+    startButton.innerHTML = "Single flight <span>→</span>";
+    modeButtons.classList.remove("is-hidden");
+    multiButton.classList.remove("is-hidden");
+    mpPanel.classList.add("is-hidden");
+    mpStatus.textContent = "";
     overlay.classList.remove("hidden");
   }
 
@@ -165,6 +237,7 @@
       panelTitle.textContent = "Paused";
       panelCopy.textContent = "Catch your breath. Your aircraft is holding position.";
       startButton.innerHTML = "Resume flight <span>→</span>";
+      multiButton.classList.add("is-hidden");
       overlay.classList.remove("hidden");
     } else if (state === "paused") {
       state = "playing";
@@ -233,8 +306,177 @@
     burst(x, y, "#ffb44a", 28, 0.95);
     shockwaves.push({ x, y, radius: 8, life: 0.5, maxLife: 0.5, color: "#ff704d" });
     updateHealth();
-    if (health <= 0) showGameOver();
+    if (gameMode === "versus") {
+      sendMessage({ t: "hit", h: health });
+      if (health <= 0) {
+        sendMessage({ t: "over" });
+        endVersus(false);
+      }
+    } else if (health <= 0) {
+      showGameOver();
+    }
     return true;
+  }
+
+  function sendMessage(message) {
+    if (gameMode === "versus" && conn && conn.open) conn.send(message);
+  }
+
+  function destroyNetwork() {
+    if (conn) {
+      try {
+        conn.close();
+      } catch {
+        /* already closed */
+      }
+      conn = null;
+    }
+    if (peer) {
+      try {
+        peer.destroy();
+      } catch {
+        /* already destroyed */
+      }
+      peer = null;
+    }
+  }
+
+  const ROOM_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+  function generateRoomCode() {
+    let code = "";
+    for (let i = 0; i < 4; i += 1) {
+      code += ROOM_ALPHABET[Math.floor(Math.random() * ROOM_ALPHABET.length)];
+    }
+    return code;
+  }
+
+  function peerLibraryMissing() {
+    if (typeof window.Peer !== "undefined") return false;
+    mpStatus.textContent = "Multiplayer library failed to load. Check your connection and refresh the page.";
+    return true;
+  }
+
+  function setupConnection() {
+    conn.on("open", () => startVersus());
+    conn.on("data", handleMessage);
+    conn.on("close", handleDisconnect);
+    conn.on("error", handleDisconnect);
+  }
+
+  function hostRoom() {
+    if (peerLibraryMissing()) return;
+    destroyNetwork();
+    isHost = true;
+    const code = generateRoomCode();
+    mpStatus.textContent = "Creating room…";
+    peer = new Peer(`skyace-${code}`);
+    peer.on("open", () => {
+      mpStatus.textContent = `Room code: ${code} — share it with your rival and keep this page open.`;
+    });
+    peer.on("connection", (connection) => {
+      if (conn && conn.open) {
+        connection.close();
+        return;
+      }
+      conn = connection;
+      setupConnection();
+    });
+    peer.on("error", (error) => {
+      if (error.type === "unavailable-id") {
+        hostRoom();
+        return;
+      }
+      mpStatus.textContent = `Connection error (${error.type}). Try again.`;
+    });
+  }
+
+  function joinRoom() {
+    const code = joinCodeInput.value.trim().toUpperCase();
+    if (code.length !== 4) {
+      mpStatus.textContent = "Enter the 4-character room code.";
+      return;
+    }
+    if (peerLibraryMissing()) return;
+    destroyNetwork();
+    isHost = false;
+    mpStatus.textContent = "Connecting…";
+    peer = new Peer();
+    peer.on("open", () => {
+      conn = peer.connect(`skyace-${code}`, { reliable: true });
+      setupConnection();
+    });
+    peer.on("error", (error) => {
+      mpStatus.textContent =
+        error.type === "peer-unavailable"
+          ? "Room not found. Check the code and make sure your rival's page is open."
+          : `Connection error (${error.type}). Try again.`;
+    });
+  }
+
+  function handleDisconnect() {
+    if (gameMode !== "versus") return;
+    conn = null;
+    if (state === "playing") {
+      endVersus(false, "Connection lost");
+    } else if (state === "gameover") {
+      startButton.innerHTML = "Back to menu <span>→</span>";
+    } else {
+      mpStatus.textContent = "Rival disconnected.";
+    }
+  }
+
+  function startVersus() {
+    gameMode = "versus";
+    resetGame();
+    player.x = isHost ? 180 : WIDTH - 180;
+    player.y = HEIGHT / 2;
+    remote.x = isHost ? WIDTH - 180 : 180;
+    remote.y = HEIGHT / 2;
+    remote.targetX = remote.x;
+    remote.targetY = remote.y;
+    remote.tilt = 0;
+    remote.health = 3;
+    remote.active = true;
+    netTimer = 0;
+    updateRivalHud();
+    state = "playing";
+    overlay.classList.add("hidden");
+    lastTime = performance.now();
+  }
+
+  function handleMessage(message) {
+    if (!message || typeof message !== "object") return;
+
+    if (message.t === "s") {
+      remote.targetX = message.x;
+      remote.targetY = message.y;
+      remote.tilt = message.k || 0;
+    } else if (message.t === "fire") {
+      enemyBullets.push({
+        x: message.x,
+        y: message.y,
+        previousX: message.x,
+        previousY: message.y,
+        vx: message.v,
+        vy: 0,
+        width: 24,
+        height: 7,
+        life: 3,
+      });
+    } else if (message.t === "hit") {
+      remote.health = message.h;
+      screenShake = Math.max(screenShake, 2);
+      burst(remote.x, remote.y, "#ffb44a", 18, 0.8);
+      shockwaves.push({ x: remote.x, y: remote.y, radius: 6, life: 0.4, maxLife: 0.4, color: "#ff704d" });
+      updateRivalHud();
+    } else if (message.t === "over") {
+      remote.health = 0;
+      updateRivalHud();
+      if (state === "playing") endVersus(true);
+    } else if (message.t === "rematch") {
+      if (state !== "playing") startVersus();
+    }
   }
 
   function fireEnemyBullet(obstacle) {
@@ -439,6 +681,11 @@
       if (obstacle.x < -100) obstacles.splice(i, 1);
     }
 
+    updateEffects(dt);
+    updateHud();
+  }
+
+  function updateEffects(dt) {
     for (let i = particles.length - 1; i >= 0; i -= 1) {
       const particle = particles[i];
       particle.x += particle.vx * dt;
@@ -461,6 +708,81 @@
       popup.y -= 35 * dt;
       popup.life -= dt;
       if (popup.life <= 0) scorePopups.splice(i, 1);
+    }
+  }
+
+  function updateVersus(dt) {
+    screenShake = Math.max(0, screenShake - dt * 22);
+    fireCooldown = Math.max(0, fireCooldown - dt);
+    muzzleFlash = Math.max(0, muzzleFlash - dt);
+    comboTimer = Math.max(0, comboTimer - dt);
+    if (comboTimer === 0) combo = 0;
+    if (rightMouseDown || pointerActive || keys.has("Space")) fireBullet();
+    movePlayer(dt);
+
+    for (const cloud of clouds) {
+      cloud.x -= cloud.speed * dt;
+      if (cloud.x < -cloud.size * 2) {
+        cloud.x = WIDTH + cloud.size * 2;
+        cloud.y = random(75, HEIGHT - 95);
+      }
+    }
+
+    for (const streak of streaks) {
+      streak.x -= streak.speed * dt;
+      if (streak.x < -streak.length) {
+        streak.x = WIDTH + random(0, 180);
+        streak.y = random(0, HEIGHT);
+      }
+    }
+
+    remote.x += (remote.targetX - remote.x) * Math.min(1, dt * 14);
+    remote.y += (remote.targetY - remote.y) * Math.min(1, dt * 14);
+
+    const rival = { x: remote.x, y: remote.y, width: player.width, height: player.height };
+
+    for (let i = bullets.length - 1; i >= 0; i -= 1) {
+      const bullet = bullets[i];
+      bullet.previousX = bullet.x;
+      bullet.x += bullet.speed * dt;
+
+      if (remote.active && sweptBulletHits(bullet, rival)) {
+        combo += 1;
+        comboTimer = 2.2;
+        const points = BULLET_SCORE * Math.min(combo, 5);
+        score += points;
+        addImpact(bullet.x, bullet.y, "#f1655f", points);
+        bullets.splice(i, 1);
+        continue;
+      }
+
+      if (bullet.x > WIDTH + 40 || bullet.x < -40) bullets.splice(i, 1);
+    }
+
+    for (let i = enemyBullets.length - 1; i >= 0; i -= 1) {
+      const bullet = enemyBullets[i];
+      bullet.previousX = bullet.x;
+      bullet.previousY = bullet.y;
+      bullet.x += bullet.vx * dt;
+      bullet.y += bullet.vy * dt;
+      bullet.life -= dt;
+
+      if (boxesOverlap(bullet, player, 5)) {
+        damagePlayer(bullet.x, bullet.y);
+        enemyBullets.splice(i, 1);
+        if (health <= 0) return;
+        continue;
+      }
+
+      if (bullet.life <= 0 || bullet.x < -40 || bullet.x > WIDTH + 40) enemyBullets.splice(i, 1);
+    }
+
+    updateEffects(dt);
+
+    netTimer -= dt;
+    if (netTimer <= 0) {
+      sendMessage({ t: "s", x: player.x, y: player.y, k: player.tilt });
+      netTimer = 0.05;
     }
 
     updateHud();
@@ -597,49 +919,46 @@
 
   function drawBullets() {
     for (const bullet of bullets) {
-      const glow = ctx.createLinearGradient(
-        bullet.x - 52,
-        bullet.y,
-        bullet.x + bullet.width / 2,
-        bullet.y
-      );
+      const direction = bullet.speed < 0 ? -1 : 1;
+      ctx.save();
+      ctx.translate(bullet.x, bullet.y);
+      ctx.scale(direction, 1);
+
+      const glow = ctx.createLinearGradient(-52, 0, 12, 0);
       glow.addColorStop(0, "rgba(255, 228, 120, 0)");
       glow.addColorStop(0.72, "rgba(255, 210, 80, .45)");
       glow.addColorStop(1, "#fff8d8");
       ctx.fillStyle = glow;
       ctx.beginPath();
-      ctx.roundRect(
-        bullet.x - 52,
-        bullet.y - bullet.height / 2,
-        64,
-        bullet.height,
-        3
-      );
+      ctx.roundRect(-52, -bullet.height / 2, 64, bullet.height, 3);
       ctx.fill();
 
       ctx.fillStyle = "#ffffff";
       ctx.beginPath();
-      ctx.ellipse(bullet.x + 7, bullet.y, 7, 3, 0, 0, Math.PI * 2);
+      ctx.ellipse(7, 0, 7, 3, 0, 0, Math.PI * 2);
       ctx.fill();
+      ctx.restore();
     }
   }
 
   function drawEnemyBullets(time) {
     for (const bullet of enemyBullets) {
       const pulse = 1 + Math.sin(time * 0.02 + bullet.x * 0.04) * 0.22;
-      const gradient = ctx.createLinearGradient(bullet.x + 28, bullet.y, bullet.x - 8, bullet.y);
+      const tailX = bullet.x - bullet.vx * 0.075;
+      const tailY = bullet.y - bullet.vy * 0.075;
+      const gradient = ctx.createLinearGradient(tailX, tailY, bullet.x, bullet.y);
       gradient.addColorStop(0, "rgba(255, 75, 60, 0)");
       gradient.addColorStop(0.7, "rgba(255, 100, 70, .6)");
       gradient.addColorStop(1, "#fff1d0");
       ctx.strokeStyle = gradient;
       ctx.lineWidth = 5 * pulse;
       ctx.beginPath();
-      ctx.moveTo(bullet.x + 28, bullet.y - bullet.vy * 0.03);
-      ctx.lineTo(bullet.x - 7, bullet.y);
+      ctx.moveTo(tailX, tailY);
+      ctx.lineTo(bullet.x, bullet.y);
       ctx.stroke();
       ctx.fillStyle = "#fff5d6";
       ctx.beginPath();
-      ctx.arc(bullet.x - 5, bullet.y, 4 * pulse, 0, Math.PI * 2);
+      ctx.arc(bullet.x, bullet.y, 4 * pulse, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -672,8 +991,10 @@
   function drawMuzzleFlash(time) {
     if (muzzleFlash <= 0) return;
     const radius = 12 + Math.sin(time * 0.08) * 4;
+    const facing = localFacing();
     ctx.save();
-    ctx.translate(player.x + 44, player.y);
+    ctx.translate(player.x + 44 * facing, player.y);
+    ctx.scale(facing, 1);
     ctx.fillStyle = "rgba(255, 244, 170, .95)";
     ctx.shadowColor = "#ff9c34";
     ctx.shadowBlur = 18;
@@ -717,12 +1038,16 @@
       }
     }
 
+    if (gameMode === "versus" && remote.active && remote.health > 0) {
+      drawPlane(remote.x, remote.y, 1, "#f1655f", isHost ? -1 : 1, remote.tilt);
+    }
+
     drawBullets();
     drawEnemyBullets(time);
 
     if (state !== "gameover" || health > 0) {
       const blink = player.invulnerable > 0 && Math.floor(player.invulnerable * 12) % 2 === 0;
-      if (!blink) drawPlane(player.x, player.y, 1, "#edf8ff", 1, player.tilt);
+      if (!blink) drawPlane(player.x, player.y, 1, "#edf8ff", localFacing(), player.tilt);
     }
 
     drawMuzzleFlash(time);
@@ -734,7 +1059,13 @@
   function gameLoop(time) {
     const dt = Math.min((time - lastTime) / 1000, 0.033) || 0;
     lastTime = time;
-    if (state === "playing") update(dt);
+    if (state === "playing") {
+      if (gameMode === "versus") {
+        updateVersus(dt);
+      } else {
+        update(dt);
+      }
+    }
     draw(time);
     requestAnimationFrame(gameLoop);
   }
@@ -753,16 +1084,24 @@
   }
 
   window.addEventListener("keydown", (event) => {
+    if (event.target === joinCodeInput) return;
+
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(event.code)) {
       event.preventDefault();
     }
 
-    if (event.code === "KeyP" && !event.repeat) {
+    if (event.code === "KeyP" && !event.repeat && gameMode === "single") {
       togglePause();
       return;
     }
 
-    if ((event.code === "Enter" || event.code === "Space") && !event.repeat && state !== "playing") {
+    if (
+      (event.code === "Enter" || event.code === "Space") &&
+      !event.repeat &&
+      state !== "playing" &&
+      gameMode === "single" &&
+      mpPanel.classList.contains("is-hidden")
+    ) {
       state === "paused" ? togglePause() : startGame();
       return;
     }
@@ -778,7 +1117,7 @@
   window.addEventListener("blur", () => {
     keys.clear();
     rightMouseDown = false;
-    if (state === "playing") togglePause();
+    if (state === "playing" && gameMode === "single") togglePause();
   });
 
   canvas.addEventListener("contextmenu", (event) => {
@@ -836,7 +1175,34 @@
   });
 
   startButton.addEventListener("click", () => {
+    if (gameMode === "versus") {
+      if (conn && conn.open) {
+        sendMessage({ t: "rematch" });
+        startVersus();
+      } else {
+        resetToMenu();
+      }
+      return;
+    }
     state === "paused" ? togglePause() : startGame();
+  });
+
+  multiButton.addEventListener("click", () => {
+    modeButtons.classList.add("is-hidden");
+    mpPanel.classList.remove("is-hidden");
+    panelKicker.textContent = "Multiplayer dogfight";
+    panelTitle.textContent = "Find a rival";
+    panelCopy.textContent =
+      "Create a room and share the 4-letter code, or enter a friend's code to join their sky. First to shoot the rival down wins.";
+    mpStatus.textContent = "";
+  });
+
+  mpBackButton.addEventListener("click", resetToMenu);
+  createRoomButton.addEventListener("click", hostRoom);
+  joinRoomButton.addEventListener("click", joinRoom);
+  joinCodeInput.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Enter") joinRoom();
   });
 
   initializeSky();
