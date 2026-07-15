@@ -54,10 +54,16 @@
   let comboTimer = 0;
 
   let gameMode = "single";
-  let peer = null;
+  let mqttClient = null;
   let conn = null;
   let isHost = false;
   let netTimer = 0;
+  let roomCode = "";
+  let heartbeatTimer = null;
+  let handshakeTimer = null;
+  let connectTimeout = null;
+  let lastReceivedAt = 0;
+  let round = 0;
   const remote = { x: 0, y: 0, targetX: 0, targetY: 0, tilt: 0, health: 3, active: false };
 
   function localFacing() {
@@ -323,25 +329,29 @@
   }
 
   function destroyNetwork() {
-    if (conn) {
+    clearInterval(heartbeatTimer);
+    clearInterval(handshakeTimer);
+    clearTimeout(connectTimeout);
+    heartbeatTimer = null;
+    handshakeTimer = null;
+    connectTimeout = null;
+    if (mqttClient) {
       try {
-        conn.close();
+        if (conn && conn.open && mqttClient.connected) {
+          mqttClient.publish(rivalTopic(), JSON.stringify({ t: "bye" }));
+        }
+        mqttClient.end(true);
       } catch {
         /* already closed */
       }
-      conn = null;
+      mqttClient = null;
     }
-    if (peer) {
-      try {
-        peer.destroy();
-      } catch {
-        /* already destroyed */
-      }
-      peer = null;
-    }
+    conn = null;
+    roomCode = "";
   }
 
   const ROOM_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  const MQTT_BROKER = "wss://broker.emqx.io:8084/mqtt";
 
   function generateRoomCode() {
     let code = "";
@@ -351,43 +361,158 @@
     return code;
   }
 
-  function peerLibraryMissing() {
-    if (typeof window.Peer !== "undefined") return false;
+  function mqttLibraryMissing() {
+    if (typeof window.mqtt !== "undefined") return false;
     mpStatus.textContent = "Multiplayer library failed to load. Check your connection and refresh the page.";
     return true;
   }
 
-  function setupConnection() {
-    conn.on("open", () => startVersus());
-    conn.on("data", handleMessage);
-    conn.on("close", handleDisconnect);
-    conn.on("error", handleDisconnect);
+  // Each side publishes to the rival's topic and listens on its own, so
+  // messages relay through the broker without echoing back to the sender.
+  function ownTopic() {
+    return `skyace-duel/${roomCode}/${isHost ? "h" : "g"}`;
+  }
+
+  function rivalTopic() {
+    return `skyace-duel/${roomCode}/${isHost ? "g" : "h"}`;
+  }
+
+  function openBroker(onReady) {
+    mqttClient = window.mqtt.connect(MQTT_BROKER, {
+      connectTimeout: 8000,
+      keepalive: 30,
+      clean: true,
+    });
+
+    connectTimeout = setTimeout(() => {
+      if (mqttClient && !mqttClient.connected) {
+        destroyNetwork();
+        mpStatus.textContent = "Could not reach the relay server. Check your connection and try again.";
+      }
+    }, 12000);
+
+    let readyFired = false;
+    mqttClient.on("connect", () => {
+      clearTimeout(connectTimeout);
+      if (readyFired) return;
+      readyFired = true;
+      mqttClient.subscribe(ownTopic(), (error) => {
+        if (error) {
+          destroyNetwork();
+          mpStatus.textContent = "Relay subscription failed. Try again.";
+          return;
+        }
+        onReady();
+      });
+    });
+
+    mqttClient.on("message", (topic, payload) => {
+      let message = null;
+      try {
+        message = JSON.parse(payload.toString());
+      } catch {
+        return;
+      }
+      handleTransportMessage(message);
+    });
+
+    mqttClient.on("error", () => {
+      if (!conn) mpStatus.textContent = "Relay connection error. Try again.";
+    });
+  }
+
+  function establishLink() {
+    conn = {
+      open: true,
+      send(message) {
+        if (mqttClient && mqttClient.connected) {
+          const transient = message.t === "s" || message.t === "hb";
+          mqttClient.publish(rivalTopic(), JSON.stringify(message), { qos: transient ? 0 : 1 });
+        }
+      },
+    };
+    round = 1;
+    lastReceivedAt = Date.now();
+    clearInterval(handshakeTimer);
+    handshakeTimer = null;
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(() => {
+      if (!conn) return;
+      // Heartbeats repeat our health and round so a lost one-shot message
+      // can never strand the rival (e.g. missing the killing blow).
+      conn.send({ t: "hb", h: health, r: round });
+      if (Date.now() - lastReceivedAt > 10000) handleDisconnect();
+    }, 1000);
+  }
+
+  function setRivalHealth(value) {
+    if (typeof value !== "number" || value === remote.health) return;
+    if (value < remote.health) {
+      screenShake = Math.max(screenShake, 2);
+      burst(remote.x, remote.y, "#ffb44a", 18, 0.8);
+      shockwaves.push({ x: remote.x, y: remote.y, radius: 6, life: 0.4, maxLife: 0.4, color: "#ff704d" });
+    }
+    remote.health = value;
+    updateRivalHud();
+    if (value <= 0 && state === "playing" && gameMode === "versus") endVersus(true);
+  }
+
+  function syncRound(messageRound) {
+    if (typeof messageRound !== "number" || messageRound <= round) return messageRound === round;
+    // The rival is already in a newer round (their rematch message may have
+    // been lost) — jump forward and restart with them.
+    round = messageRound;
+    startVersus();
+    return true;
+  }
+
+  function handleTransportMessage(message) {
+    if (!message || typeof message !== "object") return;
+    lastReceivedAt = Date.now();
+
+    if (message.t === "hello") {
+      if (!isHost) return;
+      // Re-send the welcome for repeated hellos so a missed packet cannot
+      // strand the guest on "Connecting".
+      if (!conn) {
+        establishLink();
+        conn.send({ t: "welcome" });
+        startVersus();
+      } else {
+        conn.send({ t: "welcome" });
+      }
+      return;
+    }
+
+    if (message.t === "welcome") {
+      if (isHost || conn) return;
+      establishLink();
+      startVersus();
+      return;
+    }
+
+    if (message.t === "hb") {
+      syncRound(message.r);
+      setRivalHealth(message.h);
+      return;
+    }
+
+    if (message.t === "bye") {
+      handleDisconnect();
+      return;
+    }
+
+    handleMessage(message);
   }
 
   function hostRoom() {
-    if (peerLibraryMissing()) return;
+    if (mqttLibraryMissing()) return;
     destroyNetwork();
     isHost = true;
-    const code = generateRoomCode();
+    roomCode = generateRoomCode();
     mpStatus.textContent = "Creating room…";
-    peer = new Peer(`skyace-${code}`);
-    peer.on("open", () => {
-      mpStatus.textContent = `Room code: ${code} — share it with your rival and keep this page open.`;
-    });
-    peer.on("connection", (connection) => {
-      if (conn && conn.open) {
-        connection.close();
-        return;
-      }
-      conn = connection;
-      setupConnection();
-    });
-    peer.on("error", (error) => {
-      if (error.type === "unavailable-id") {
-        hostRoom();
-        return;
-      }
-      mpStatus.textContent = `Connection error (${error.type}). Try again.`;
+    openBroker(() => {
+      mpStatus.textContent = `Room code: ${roomCode} — share it with your rival and keep this page open.`;
     });
   }
 
@@ -397,29 +522,38 @@
       mpStatus.textContent = "Enter the 4-character room code.";
       return;
     }
-    if (peerLibraryMissing()) return;
+    if (mqttLibraryMissing()) return;
     destroyNetwork();
     isHost = false;
+    roomCode = code;
     mpStatus.textContent = "Connecting…";
-    peer = new Peer();
-    peer.on("open", () => {
-      conn = peer.connect(`skyace-${code}`, { reliable: true });
-      setupConnection();
-    });
-    peer.on("error", (error) => {
-      mpStatus.textContent =
-        error.type === "peer-unavailable"
-          ? "Room not found. Check the code and make sure your rival's page is open."
-          : `Connection error (${error.type}). Try again.`;
+    openBroker(() => {
+      mpStatus.textContent = "Looking for the room…";
+      let attempts = 0;
+      const sayHello = () => {
+        if (conn || !mqttClient || !mqttClient.connected) return;
+        attempts += 1;
+        if (attempts > 15) {
+          destroyNetwork();
+          mpStatus.textContent =
+            "No answer from that room. Double-check the code and make sure your rival's page is still open, then try again.";
+          return;
+        }
+        mqttClient.publish(rivalTopic(), JSON.stringify({ t: "hello" }), { qos: 1 });
+      };
+      sayHello();
+      handshakeTimer = setInterval(sayHello, 1000);
     });
   }
 
   function handleDisconnect() {
-    if (gameMode !== "versus") return;
+    if (gameMode !== "versus" && !conn) return;
     conn = null;
-    if (state === "playing") {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+    if (state === "playing" && gameMode === "versus") {
       endVersus(false, "Connection lost");
-    } else if (state === "gameover") {
+    } else if (state === "gameover" && gameMode === "versus") {
       startButton.innerHTML = "Back to menu <span>→</span>";
     } else {
       mpStatus.textContent = "Rival disconnected.";
@@ -465,17 +599,11 @@
         life: 3,
       });
     } else if (message.t === "hit") {
-      remote.health = message.h;
-      screenShake = Math.max(screenShake, 2);
-      burst(remote.x, remote.y, "#ffb44a", 18, 0.8);
-      shockwaves.push({ x: remote.x, y: remote.y, radius: 6, life: 0.4, maxLife: 0.4, color: "#ff704d" });
-      updateRivalHud();
+      setRivalHealth(message.h);
     } else if (message.t === "over") {
-      remote.health = 0;
-      updateRivalHud();
-      if (state === "playing") endVersus(true);
+      setRivalHealth(0);
     } else if (message.t === "rematch") {
-      if (state !== "playing") startVersus();
+      syncRound(message.r);
     }
   }
 
@@ -1177,7 +1305,8 @@
   startButton.addEventListener("click", () => {
     if (gameMode === "versus") {
       if (conn && conn.open) {
-        sendMessage({ t: "rematch" });
+        round += 1;
+        sendMessage({ t: "rematch", r: round });
         startVersus();
       } else {
         resetToMenu();
