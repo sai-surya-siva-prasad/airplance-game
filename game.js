@@ -162,6 +162,102 @@
 
   const POWERUP_TYPES = ["shield", "triple", "repair"];
 
+  // --- Story campaign ---
+  const FINAL_AT = 14;
+  const CRAWL_DURATION = 26;
+  let finalSpawned = false;
+  let introTime = 0;
+  let crawlSeen = false;
+
+  const CRAWL_TITLE = "SKYLINE ACE";
+  const CRAWL_SUBTITLE = "Episode VII — THE LAST SQUADRON";
+  const CRAWL_LINES = [
+    "It is a dark hour for the planet.",
+    "BARON NYX and his Crimson Armada",
+    "have seized the skies, stage by stage,",
+    "from the daybreak coast to the",
+    "towers of Manhattan.",
+    "",
+    "Every squadron sent against him",
+    "has fallen. You are the last ace",
+    "of Flight Command.",
+    "",
+    "Your orders: fight through his",
+    "six occupied skies, destroy his",
+    "stage guardians, and face the",
+    "Baron himself above the city.",
+    "",
+    "The planet is counting on you...",
+  ];
+
+  const SPEAKERS = {
+    command: { name: "FLT COMMAND", color: "#59e6ff" },
+    ace: { name: "YOU", color: "#ffe08a" },
+    nyx: { name: "BARON NYX", color: "#ff5a67" },
+  };
+
+  const STAGE_STORY = [
+    [{ who: "command", text: "Nyx's armada crossed the ridge at dawn. Clear the daybreak sky, Ace." }],
+    [{ who: "command", text: "His fighters are burning the coastline. Punch through the sunset squadron." }],
+    [
+      { who: "command", text: "They fly dark after midnight. Watch the stars for silhouettes." },
+      { who: "nyx", text: "Still alive, little pilot? The night belongs to me." },
+    ],
+    [
+      { who: "command", text: "He's hiding his fleet inside the storm. Thread the lightning and keep moving." },
+      { who: "ace", text: "Storm or no storm, I'm coming for him." },
+    ],
+    [
+      { who: "command", text: "His mothership dragged you into orbit. Asteroids ahead — don't stop firing." },
+      { who: "nyx", text: "Impressive. Most impressive. But space is where aces go to die." },
+    ],
+    [
+      { who: "command", text: "He's over Manhattan! If the city falls, the planet follows. This is it, Ace." },
+      { who: "nyx", text: "Watch closely, pilot, as I take your shining city apart." },
+    ],
+  ];
+
+  const GUARDIAN_TAUNTS = [
+    "",
+    "My sunset guardian will bury you in the sea.",
+    "You cannot fight what you cannot see.",
+    "My storm guardian rides the thunder. Farewell.",
+    "This far from home? My void guardian ends it here.",
+    "My last guardian defends the city. You shall not pass.",
+  ];
+
+  const GUARDIAN_DOWN = [
+    "",
+    "Guardian down. Keep breathing, Ace — you're our only hope.",
+    "Splash confirmed! The night sky is yours.",
+    "You flew through his thunder and came out shooting. Incredible.",
+    "Orbital guardian destroyed. Get back down there and save the city.",
+    "That was his last guardian. Now it's just you and the Baron.",
+  ];
+
+  const comms = [];
+  let currentComm = null;
+
+  function pushComm(who, text) {
+    if (gameMode !== "single") return;
+    comms.push({ who, text });
+    if (comms.length > 4) comms.shift();
+  }
+
+  function updateComms(dt) {
+    if (!currentComm && comms.length) {
+      const next = comms.shift();
+      currentComm = { ...next, shown: 0, linger: 2.8 };
+    }
+    if (!currentComm) return;
+    if (currentComm.shown < currentComm.text.length) {
+      currentComm.shown = Math.min(currentComm.text.length, currentComm.shown + dt * 46);
+    } else {
+      currentComm.linger -= dt;
+      if (currentComm.linger <= 0) currentComm = null;
+    }
+  }
+
   function stageIndexForDistance(travelled) {
     let index = 0;
     for (let i = 0; i < STAGES.length; i += 1) {
@@ -230,6 +326,7 @@
     stageBanner = { text: `Stage ${index + 1}`, sub: stage.name, life: 2.4, maxLife: 2.4 };
     updateStageLabel();
     if (index >= 1 && gameMode === "single") bossDelay = 2.6;
+    for (const line of STAGE_STORY[index] || []) pushComm(line.who, line.text);
   }
 
   function spawnPowerup(x, y, forcedType) {
@@ -272,13 +369,52 @@
       difficulty,
     };
     stageBanner = { text: "Warning", sub: "Stage guardian inbound", life: 2, maxLife: 2 };
+    if (GUARDIAN_TAUNTS[stageIndex]) pushComm("nyx", GUARDIAN_TAUNTS[stageIndex]);
+  }
+
+  function spawnFinalBoss() {
+    finalSpawned = true;
+    boss = {
+      final: true,
+      name: "BARON NYX",
+      x: WIDTH + 180,
+      y: HEIGHT / 2,
+      targetX: WIDTH - 210,
+      width: 108,
+      height: 48,
+      health: 26,
+      maxHealth: 26,
+      phase: random(0, Math.PI * 2),
+      fireTimer: 2,
+      entering: true,
+      jinkY: 0,
+      jinkTimer: 0,
+      burstShots: 0,
+      burstTimer: 0,
+      taunted66: false,
+      taunted33: false,
+      difficulty: stageDifficulty(),
+    };
+    stageBanner = { text: "Final Battle", sub: "Baron Nyx himself", life: 3, maxLife: 3 };
+    distanceLabel.textContent = "Final Battle · Baron Nyx";
+
+    // The Baron calls off his fleet — this is a one-on-one duel
+    for (const obstacle of obstacles) {
+      burst(obstacle.x, obstacle.y, "#9fb4c8", 6, 0.4);
+    }
+    obstacles.length = 0;
+    enemyBullets.length = 0;
+    pushComm("nyx", "Enough. No more guardians — you face ME now, ace to ace.");
+    pushComm("ace", "For the squadron. For the planet. Let's dance, Baron.");
+    pushComm("command", "Supply drop inbound. Shields up, Ace — the planet is watching.");
+    spawnPowerup(undefined, undefined, "shield");
   }
 
   function bossFireSpread() {
     const aimX = player.x - (boss.x - 46);
     const aimY = player.y - boss.y;
     const baseAngle = Math.atan2(aimY, aimX);
-    const speed = 275 + stageIndex * 22;
+    const speed = boss.final ? 310 : 275 + stageIndex * 22;
     for (const offset of [-0.24, 0, 0.24]) {
       const angle = baseAngle + offset;
       enemyBullets.push({
@@ -297,6 +433,18 @@
   }
 
   function killBoss() {
+    if (boss.final) {
+      const wasBoss = boss;
+      boss = null;
+      screenShake = 16;
+      burst(wasBoss.x, wasBoss.y, "#ffb44a", 60, 1.4);
+      burst(wasBoss.x - 30, wasBoss.y + 14, "#ff5a67", 44, 1.2);
+      burst(wasBoss.x + 20, wasBoss.y - 20, "#ffffff", 30, 1);
+      shockwaves.push({ x: wasBoss.x, y: wasBoss.y, radius: 14, life: 0.9, maxLife: 0.9, color: "#ffd97a" });
+      score += 5000;
+      showVictory();
+      return;
+    }
     const points = 800 + stageIndex * 400;
     score += points;
     screenShake = 12;
@@ -305,13 +453,87 @@
     shockwaves.push({ x: boss.x, y: boss.y, radius: 14, life: 0.6, maxLife: 0.6, color: "#ffd97a" });
     scorePopups.push({ x: boss.x, y: boss.y - 40, text: `BOSS DOWN +${points}`, life: 1.2, maxLife: 1.2 });
     spawnPowerup(boss.x, boss.y, "repair");
+    if (GUARDIAN_DOWN[stageIndex]) pushComm("command", GUARDIAN_DOWN[stageIndex]);
     boss = null;
+  }
+
+  function bossFireBurstShot() {
+    const aimX = player.x - (boss.x - 46);
+    const aimY = player.y - boss.y;
+    const angle = Math.atan2(aimY, aimX) + random(-0.05, 0.05);
+    const speed = 330;
+    enemyBullets.push({
+      x: boss.x - 46,
+      y: boss.y,
+      previousX: boss.x - 46,
+      previousY: boss.y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      width: 12,
+      height: 8,
+      life: 5,
+    });
+    burst(boss.x - 48, boss.y, "#ff6f5d", 4, 0.2);
+  }
+
+  function updateFinalBoss(dt) {
+    // Human-like flying: track the player's altitude with lag, plus random jinks
+    const rage = boss.health / boss.maxHealth < 0.33 ? 1.35 : boss.health / boss.maxHealth < 0.66 ? 1.15 : 1;
+
+    boss.jinkTimer -= dt;
+    if (boss.jinkTimer <= 0) {
+      boss.jinkY = random(-160, 160);
+      boss.jinkTimer = random(0.7, 1.4) / rage;
+    }
+    const targetY = Math.max(80, Math.min(HEIGHT - 80, player.y + boss.jinkY));
+    boss.y += (targetY - boss.y) * Math.min(1, dt * 1.9 * rage);
+    boss.phase += dt;
+    boss.x = boss.targetX + Math.sin(boss.phase * 0.7) * 52;
+
+    if (!boss.taunted66 && boss.health / boss.maxHealth < 0.66) {
+      boss.taunted66 = true;
+      pushComm("nyx", "You fly well. It will not be enough.");
+    }
+    if (!boss.taunted33 && boss.health / boss.maxHealth < 0.33) {
+      boss.taunted33 = true;
+      pushComm("nyx", "NO! This planet is MINE!");
+      screenShake = Math.max(screenShake, 6);
+    }
+
+    if (boss.burstShots > 0) {
+      boss.burstTimer -= dt;
+      if (boss.burstTimer <= 0) {
+        bossFireBurstShot();
+        boss.burstShots -= 1;
+        boss.burstTimer = 0.22;
+      }
+    } else {
+      boss.fireTimer -= dt;
+      if (boss.fireTimer <= 0) {
+        if (Math.random() < 0.5) {
+          bossFireSpread();
+        } else {
+          boss.burstShots = 3;
+          boss.burstTimer = 0;
+        }
+        boss.fireTimer = random(1.6, 2.2) / rage;
+      }
+    }
+
+    if (player.invulnerable <= 0 && boxesOverlap(player, boss, 10)) {
+      damagePlayer(player.x + 20, player.y);
+    }
   }
 
   function updateBoss(dt) {
     if (boss.entering) {
       boss.x += (boss.targetX - boss.x) * Math.min(1, dt * 2.4);
       if (boss.x - boss.targetX < 8) boss.entering = false;
+      return;
+    }
+
+    if (boss.final) {
+      updateFinalBoss(dt);
       return;
     }
 
@@ -453,6 +675,9 @@
     boss = null;
     bossDelay = 0;
     powerups.length = 0;
+    finalSpawned = false;
+    comms.length = 0;
+    currentComm = null;
     rightMouseDown = false;
     obstacles.length = 0;
     bullets.length = 0;
@@ -496,7 +721,7 @@
   // Debug/preview helper: open the page with ?km=9 to start that far in.
   const START_KM = Math.max(0, parseFloat(new URLSearchParams(window.location.search).get("km")) || 0);
 
-  function startGame() {
+  function beginFlight() {
     destroyNetwork();
     gameMode = "single";
     resetGame();
@@ -508,6 +733,26 @@
     state = "playing";
     overlay.classList.add("hidden");
     lastTime = performance.now();
+    for (const line of STAGE_STORY[stageIndex] || []) pushComm(line.who, line.text);
+  }
+
+  function startGame() {
+    if (!crawlSeen && START_KM === 0) {
+      crawlSeen = true;
+      destroyNetwork();
+      gameMode = "single";
+      state = "intro";
+      introTime = 0;
+      overlay.classList.add("hidden");
+      lastTime = performance.now();
+      return;
+    }
+    beginFlight();
+  }
+
+  function skipIntro() {
+    if (state !== "intro") return;
+    beginFlight();
   }
 
   function readBestScore() {
@@ -539,6 +784,28 @@
       panelCopy.textContent = `Final score: ${finalScore.toLocaleString()}. Personal best: ${best.toLocaleString()}. The squadron is ready when you are.`;
     }
     startButton.innerHTML = "Fly again <span>→</span>";
+    multiButton.textContent = "Multiplayer dogfight";
+    multiButton.classList.remove("is-hidden");
+    mpPanel.classList.add("is-hidden");
+    modeButtons.classList.remove("is-hidden");
+    overlay.classList.remove("hidden");
+  }
+
+  function showVictory() {
+    state = "victory";
+    const finalScore = Math.floor(score);
+    const best = readBestScore();
+    if (finalScore > best) saveBestScore(finalScore);
+    panelKicker.textContent = "The Crimson Armada has fallen";
+    panelTitle.textContent = "Planet Saved!";
+    panelCopy.textContent =
+      `Baron Nyx spirals into the bay and the skies belong to the free world again. ` +
+      (finalScore > best
+        ? `Final score: ${finalScore.toLocaleString()} — new personal best! `
+        : `Final score: ${finalScore.toLocaleString()}. `) +
+      `You beat the Baron... but can you beat a real human pilot?`;
+    startButton.innerHTML = "Fly the campaign again <span>→</span>";
+    multiButton.innerHTML = "Fight a real pilot →";
     multiButton.classList.remove("is-hidden");
     mpPanel.classList.add("is-hidden");
     modeButtons.classList.remove("is-hidden");
@@ -572,9 +839,10 @@
     panelKicker.textContent = "Ready for takeoff?";
     panelTitle.textContent = "Skyline Ace";
     panelCopy.textContent =
-      "Fight through five stages — daybreak, sunset, night, storm, and deep space — each faster and meaner than the last. Watch for the red lock-on ring and chain hits for a score multiplier.";
-    startButton.innerHTML = "Single flight <span>→</span>";
+      "Baron Nyx and his Crimson Armada have seized the planet's skies. Fight through six occupied stages, destroy his guardians, and face the Baron himself above Manhattan.";
+    startButton.innerHTML = "Start campaign <span>→</span>";
     modeButtons.classList.remove("is-hidden");
+    multiButton.textContent = "Multiplayer dogfight";
     multiButton.classList.remove("is-hidden");
     mpPanel.classList.add("is-hidden");
     mpStatus.textContent = "";
@@ -1123,6 +1391,11 @@
     shieldTime = Math.max(0, shieldTime - dt);
     tripleTime = Math.max(0, tripleTime - dt);
     cityScroll += dt * 60;
+    updateComms(dt);
+
+    if (!finalSpawned && distance >= FINAL_AT && !boss && bossDelay <= 0) {
+      spawnFinalBoss();
+    }
 
     if (bossDelay > 0) {
       bossDelay -= dt;
@@ -1893,16 +2166,31 @@
 
   function drawBoss(time) {
     const flash = boss.health < boss.maxHealth && Math.sin(time * 0.05) > 0.7;
-    drawPlane(boss.x, boss.y, 1.7, flash ? "#ff8f8a" : STAGES[stageIndex].space ? "#2f3550" : "#8e2f4d", -1, Math.sin(boss.phase || 0) * 0.06);
+    if (boss.final) {
+      ctx.save();
+      ctx.shadowColor = "#ff2b3e";
+      ctx.shadowBlur = 26;
+      drawPlane(boss.x, boss.y, 1.5, flash ? "#ff8f8a" : "#151826", -1, Math.sin(boss.phase || 0) * 0.05);
+      ctx.restore();
+    } else {
+      drawPlane(boss.x, boss.y, 1.7, flash ? "#ff8f8a" : STAGES[stageIndex].space ? "#2f3550" : "#8e2f4d", -1, Math.sin(boss.phase || 0) * 0.06);
+    }
 
-    const barWidth = 130;
+    const barWidth = boss.final ? 190 : 130;
     const ratio = Math.max(0, boss.health / boss.maxHealth);
     ctx.save();
+    if (boss.final) {
+      ctx.fillStyle = "#ff5a67";
+      ctx.textAlign = "center";
+      ctx.font = "800 13px Arial, sans-serif";
+      ctx.fillText(boss.name, boss.x, boss.y - 76);
+      ctx.textAlign = "left";
+    }
     ctx.fillStyle = "rgba(4, 20, 38, .7)";
     ctx.beginPath();
     ctx.roundRect(boss.x - barWidth / 2, boss.y - 68, barWidth, 9, 4);
     ctx.fill();
-    ctx.fillStyle = ratio > 0.4 ? "#ff704d" : "#ffd97a";
+    ctx.fillStyle = boss.final ? "#ff3d55" : ratio > 0.4 ? "#ff704d" : "#ffd97a";
     ctx.beginPath();
     ctx.roundRect(boss.x - barWidth / 2 + 1.5, boss.y - 66.5, (barWidth - 3) * ratio, 6, 3);
     ctx.fill();
@@ -2011,12 +2299,23 @@
       ctx.restore();
     }
 
+    drawComms();
+
     ctx.restore();
   }
 
   function gameLoop(time) {
     const dt = Math.min((time - lastTime) / 1000, 0.033) || 0;
     lastTime = time;
+    if (state === "intro") {
+      introTime += dt;
+      if (introTime >= CRAWL_DURATION) beginFlight();
+    }
+    if (state === "intro") {
+      drawCrawl(time);
+      requestAnimationFrame(gameLoop);
+      return;
+    }
     if (state === "playing") {
       if (gameMode === "versus") {
         updateVersus(dt);
@@ -2026,6 +2325,100 @@
     }
     draw(time);
     requestAnimationFrame(gameLoop);
+  }
+
+  function drawCrawl(time) {
+    ctx.fillStyle = "#02030d";
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+    for (const star of stars) {
+      const twinkle = 0.5 + 0.5 * Math.sin(time * 0.002 + star.twinkle);
+      ctx.globalAlpha = 0.75 * twinkle;
+      ctx.fillStyle = "#eaf6ff";
+      ctx.fillRect(star.x, star.y, star.size, star.size);
+    }
+    ctx.globalAlpha = 1;
+
+    // Title flash for the first seconds
+    if (introTime < 4.4) {
+      const titleAlpha = introTime < 3.4 ? 1 : (4.4 - introTime);
+      const titleScale = 1.6 - Math.min(1, introTime / 4.4) * 0.9;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, titleAlpha);
+      ctx.fillStyle = "#ffd75e";
+      ctx.textAlign = "center";
+      ctx.font = `900 ${Math.round(64 * titleScale)}px "Arial Black", Arial, sans-serif`;
+      ctx.fillText(CRAWL_TITLE, WIDTH / 2, HEIGHT / 2 - 10);
+      ctx.font = `700 ${Math.round(19 * titleScale)}px Arial, sans-serif`;
+      ctx.fillText(CRAWL_SUBTITLE, WIDTH / 2, HEIGHT / 2 + 34);
+      ctx.restore();
+    } else {
+      // Perspective crawl: lines rise from the bottom and shrink toward a vanishing point
+      const scrollY = (introTime - 4.4) * 42;
+      ctx.save();
+      ctx.textAlign = "center";
+      for (let i = 0; i < CRAWL_LINES.length; i += 1) {
+        const lineY = HEIGHT + 40 + i * 46 - scrollY;
+        if (lineY < 40 || lineY > HEIGHT + 60) continue;
+        const depth = lineY / HEIGHT; // 0 at top (far), 1 at bottom (near)
+        const scale = 0.35 + depth * 0.95;
+        const alpha = Math.max(0, Math.min(1, (depth - 0.08) * 2.4));
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = "#ffd75e";
+        ctx.font = `700 ${Math.round(24 * scale)}px Arial, sans-serif`;
+        ctx.fillText(CRAWL_LINES[i], WIDTH / 2, lineY);
+      }
+      ctx.restore();
+    }
+
+    ctx.globalAlpha = 0.5 + 0.3 * Math.sin(time * 0.004);
+    ctx.fillStyle = "#9fb4c8";
+    ctx.textAlign = "center";
+    ctx.font = "600 14px Arial, sans-serif";
+    ctx.fillText("Click or press Space to skip", WIDTH / 2, HEIGHT - 24);
+    ctx.globalAlpha = 1;
+    ctx.textAlign = "left";
+  }
+
+  function drawComms() {
+    if (!currentComm || gameMode !== "single") return;
+    const speaker = SPEAKERS[currentComm.who];
+    const typed = currentComm.text.slice(0, Math.floor(currentComm.shown));
+    const boxX = 18;
+    const boxWidth = 470;
+    const boxY = HEIGHT - 96;
+
+    ctx.save();
+    ctx.globalAlpha = 0.92;
+    ctx.fillStyle = "rgba(4, 16, 32, .82)";
+    ctx.strokeStyle = speaker.color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(boxX, boxY, boxWidth, 78, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = speaker.color;
+    ctx.font = "800 12px Arial, sans-serif";
+    ctx.fillText(`▸ ${speaker.name}`, boxX + 14, boxY + 22);
+
+    ctx.fillStyle = "#e8f2fb";
+    ctx.font = "600 15px Arial, sans-serif";
+    const words = typed.split(" ");
+    let line = "";
+    let lineY = boxY + 44;
+    for (const word of words) {
+      const attempt = line ? `${line} ${word}` : word;
+      if (ctx.measureText(attempt).width > boxWidth - 28) {
+        ctx.fillText(line, boxX + 14, lineY);
+        line = word;
+        lineY += 20;
+      } else {
+        line = attempt;
+      }
+    }
+    ctx.fillText(line, boxX + 14, lineY);
+    ctx.restore();
   }
 
   function moveToPointer(event) {
@@ -2046,6 +2439,11 @@
 
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(event.code)) {
       event.preventDefault();
+    }
+
+    if (state === "intro") {
+      if (["Enter", "Space", "Escape"].includes(event.code) && !event.repeat) skipIntro();
+      return;
     }
 
     if (event.code === "KeyP" && !event.repeat && gameMode === "single") {
@@ -2082,6 +2480,13 @@
     event.preventDefault();
   });
 
+  canvas.addEventListener("pointerdown", (event) => {
+    if (state === "intro") {
+      event.preventDefault();
+      skipIntro();
+    }
+  });
+
   // Keep a mouse-specific fallback in addition to pointer events. Some browsers
   // do not consistently dispatch right-button pointer events on canvas.
   canvas.addEventListener("mousedown", (event) => {
@@ -2092,6 +2497,8 @@
   });
 
   canvas.addEventListener("pointerdown", (event) => {
+    if (state === "intro") return;
+
     if (event.button === 2) {
       event.preventDefault();
       rightMouseDown = true;
@@ -2168,12 +2575,18 @@
   window.skyaceDebug = () => ({
     state,
     stageIndex,
-    boss: boss ? { health: boss.health, maxHealth: boss.maxHealth, entering: boss.entering, x: boss.x, y: boss.y } : null,
+    boss: boss
+      ? { health: boss.health, maxHealth: boss.maxHealth, entering: boss.entering, x: boss.x, y: boss.y, final: !!boss.final }
+      : null,
     powerups: powerups.map((p) => p.type),
     shieldTime,
     tripleTime,
     health,
     score: Math.floor(score),
+    comm: currentComm ? currentComm.text.slice(0, Math.floor(currentComm.shown)) : null,
+    introTime,
+    player: { x: player.x, y: player.y },
+    enemyBullets: enemyBullets.map((b) => ({ x: b.x, y: b.y, vx: b.vx, vy: b.vy })),
   });
 
   initializeSky();
